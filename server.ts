@@ -16,7 +16,7 @@ import {
 } from "./db.js";
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Thrown when a source positively confirms the username doesn't exist on LeetCode.
 class LeetCodeUserNotFoundError extends Error {
