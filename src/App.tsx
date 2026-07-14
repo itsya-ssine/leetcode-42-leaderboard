@@ -78,10 +78,11 @@ export default function App() {
 
   useEffect(() => {
     loadData();
-    // Refresh trend metrics when users change
+    // Poll for updates so everyone sees new stats without a manual reload —
+    // the server also runs a real background sync every 30 minutes.
     const interval = setInterval(() => {
       loadData();
-    }, 15000); // refresh metadata every 15s to capture simulated background cadet gains!
+    }, 15000); // poll every 15s so multiple viewers stay in sync
     return () => clearInterval(interval);
   }, []);
 
@@ -113,7 +114,7 @@ export default function App() {
         throw new Error(result.error || "Failed to onboard cadet.");
       }
 
-      setFormSuccess(`Cadet @${result.displayName} successfully enrolled! Scraped ${result.allTimeSolved} solved problems.`);
+      setFormSuccess(`Cadet @${result.displayName} enrolled — fetched ${result.allTimeSolved} solved problems from LeetCode.`);
       setLeetcodeUsername("");
       setIntraId("");
       setDisplayName("");
@@ -130,12 +131,13 @@ export default function App() {
     setRefreshingId(id);
     try {
       const res = await fetch(`/api/users/${id}/refresh`, { method: "POST" });
+      const result = await res.json().catch(() => null);
       if (!res.ok) {
-        throw new Error("Failed to refresh stats.");
+        throw new Error(result?.error || "Failed to refresh stats.");
       }
       await loadData();
-    } catch (err) {
-      alert("Could not scrape live stats: limit exceeded or user invalid. Proceeding with high-fidelity progression.");
+    } catch (err: any) {
+      alert(err.message || "Couldn't refresh this cadet's stats. Their numbers are unchanged — try again shortly.");
     } finally {
       setRefreshingId(null);
     }
@@ -264,7 +266,7 @@ export default function App() {
               Leader<span className="text-teal-500">42</span>
             </h1>
             <p className="mt-2 text-zinc-500 font-mono text-xs md:text-sm tracking-widest uppercase">
-              Weekly LeetCode Sprint // Paris Cluster
+              Weekly LeetCode Sprint
             </p>
           </div>
           
