@@ -1,7 +1,6 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { fileURLToPath } from "url";
 import "dotenv/config";
 import { User, HistoryRecord } from "./src/types.js";
 import {
@@ -15,9 +14,6 @@ import {
   getMeta,
   setMeta
 } from "./db.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
