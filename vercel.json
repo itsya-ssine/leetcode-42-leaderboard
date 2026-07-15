@@ -7,8 +7,5 @@
   "routes": [
     { "src": "/api/(.*)", "dest": "server.ts" },
     { "src": "/(.*)", "dest": "/$1" }
-  ],
-  "crons": [
-    { "path": "/api/cron/sync", "schedule": "*/30 * * * *" }
   ]
 }
