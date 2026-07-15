@@ -35,8 +35,12 @@ import {
 } from "recharts";
 import { motion, AnimatePresence } from "motion/react";
 import { User, HistoryRecord } from "./types.js";
+import { useAuth } from "./AuthContext.js";
+import LoginModal from "./LoginModal.js";
 
 export default function App() {
+  const { user: currentUser, logout, refreshMe } = useAuth();
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [lastSyncAll, setLastSyncAll] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -50,6 +54,7 @@ export default function App() {
   const [leetcodeUsername, setLeetcodeUsername] = useState("");
   const [intraId, setIntraId] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
@@ -96,6 +101,10 @@ export default function App() {
       setFormError("LeetCode Username and Intra 42 ID are required.");
       return;
     }
+    if (!password || password.length < 8) {
+      setFormError("Choose a password of at least 8 characters.");
+      return;
+    }
 
     setIsSubmitting(true);
     try {
@@ -105,7 +114,8 @@ export default function App() {
         body: JSON.stringify({
           leetcodeUsername: leetcodeUsername.trim(),
           intraId: intraId.trim(),
-          displayName: displayName.trim() || leetcodeUsername.trim()
+          displayName: displayName.trim() || leetcodeUsername.trim(),
+          password
         })
       });
 
@@ -118,6 +128,8 @@ export default function App() {
       setLeetcodeUsername("");
       setIntraId("");
       setDisplayName("");
+      setPassword("");
+      await refreshMe(); // signup logs you in automatically
       await loadData();
     } catch (err: any) {
       setFormError(err.message || "An unexpected error occurred.");
@@ -294,6 +306,28 @@ export default function App() {
               <RefreshCw className={`w-4 h-4 text-teal-400 ${isSyncingAll ? "animate-spin" : ""}`} />
               {isSyncingAll ? "Syncing..." : "Force Sync All"}
             </button>
+
+            {/* Auth control */}
+            {currentUser ? (
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-mono text-zinc-400">
+                  Logged in as <span className="text-teal-400 font-bold">@{currentUser.leetcodeUsername}</span>
+                </span>
+                <button
+                  onClick={() => logout()}
+                  className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-850 text-zinc-300 hover:text-white px-4 py-3 border border-zinc-800 hover:border-zinc-700 transition duration-200 text-xs font-mono font-bold uppercase tracking-widest cursor-pointer rounded-sm"
+                >
+                  Log Out
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setIsLoginOpen(true)}
+                className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-850 text-zinc-300 hover:text-white px-5 py-3 border border-zinc-800 hover:border-zinc-700 transition duration-200 text-xs font-mono font-bold uppercase tracking-widest cursor-pointer rounded-sm"
+              >
+                Log In
+              </button>
+            )}
 
             {/* Enroll Cadet Trigger Button */}
             <button
@@ -551,14 +585,16 @@ export default function App() {
                                 <RefreshCw className={`w-3 h-3 ${refreshingId === user.id ? "animate-spin text-teal-400" : ""}`} />
                               </button>
 
-                              {/* Remove button */}
-                              <button
-                                onClick={() => handleRemoveUser(user.id, user.displayName)}
-                                className="p-1 rounded-sm hover:bg-red-950/30 text-zinc-600 hover:text-red-400 transition-colors"
-                                title="Remove Cadet"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
+                              {/* Remove button — only the account owner can delete their own row */}
+                              {currentUser?.id === user.id && (
+                                <button
+                                  onClick={() => handleRemoveUser(user.id, user.displayName)}
+                                  className="p-1 rounded-sm hover:bg-red-950/30 text-zinc-600 hover:text-red-400 transition-colors"
+                                  title="Remove Cadet"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              )}
                             </div>
                           </div>
 
@@ -579,6 +615,8 @@ export default function App() {
 
           </div>
         )}
+
+        <LoginModal open={isLoginOpen} onClose={() => setIsLoginOpen(false)} />
 
         {/* Enroll Cadet Modal Popup */}
         <AnimatePresence>
@@ -648,6 +686,19 @@ export default function App() {
                       value={displayName}
                       onChange={(e) => setDisplayName(e.target.value)}
                       className="w-full bg-zinc-950 text-zinc-100 placeholder-zinc-700 text-xs font-mono uppercase tracking-widest px-3 py-2.5 rounded-sm border border-zinc-800 focus:border-teal-500 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-zinc-500 block mb-1 uppercase font-bold tracking-wider font-mono">Password</label>
+                    <input
+                      type="password"
+                      placeholder="At least 8 characters"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="w-full bg-zinc-950 text-zinc-100 placeholder-zinc-700 text-xs font-mono tracking-widest px-3 py-2.5 rounded-sm border border-zinc-800 focus:border-teal-500 focus:outline-none transition-all"
+                      required
+                      minLength={8}
                     />
                   </div>
 

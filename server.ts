@@ -1,4 +1,5 @@
 import express from "express";
+import cookieParser from "cookie-parser";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import "dotenv/config";
@@ -12,8 +13,10 @@ import {
   updateUser,
   deleteUserById,
   getMeta,
-  setMeta
+  setMeta,
+  getAuthByLeetcodeUsername
 } from "./db.js";
+import { hashPassword, verifyPassword, setSessionCookie, clearSessionCookie, readSession, requireAuth } from "./auth.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -38,6 +41,7 @@ class LeetCodeUnavailableError extends Error {
 }
 
 app.use(express.json());
+app.use(cookieParser());
 
 // Utility to calculate ranks and progress metrics
 function sortAndRankUsers(users: User[]) {
@@ -267,12 +271,15 @@ app.get("/api/users", async (req, res) => {
   }
 });
 
-// POST create user
+// POST create user (signup)
 app.post("/api/users", async (req, res) => {
-  const { displayName, leetcodeUsername, intraId } = req.body;
+  const { displayName, leetcodeUsername, intraId, password } = req.body;
 
   if (!leetcodeUsername || !intraId) {
     return res.status(400).json({ error: "LeetCode Username and Intra ID are required." });
+  }
+  if (!password || typeof password !== "string" || password.length < 8) {
+    return res.status(400).json({ error: "A password of at least 8 characters is required." });
   }
 
   try {
@@ -315,7 +322,11 @@ app.post("/api/users", async (req, res) => {
       ]
     };
 
-    await insertUser(newUser);
+    const passwordHash = await hashPassword(password);
+    await insertUser(newUser, passwordHash);
+
+    // Log the newly-created account straight in, same as a normal login would.
+    setSessionCookie(res, { id: newUser.id, leetcodeUsername: newUser.leetcodeUsername });
 
     res.status(201).json(newUser);
   } catch (error: any) {
@@ -329,15 +340,63 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
-// DELETE user
-app.delete("/api/users/:id", async (req, res) => {
+// POST login
+app.post("/api/login", async (req, res) => {
+  const { leetcodeUsername, password } = req.body;
+  if (!leetcodeUsername || !password) {
+    return res.status(400).json({ error: "LeetCode username and password are required." });
+  }
+
+  try {
+    const record = await getAuthByLeetcodeUsername(leetcodeUsername);
+    // Same generic error whether the username doesn't exist or the password
+    // is wrong — don't let login responses reveal which usernames are registered.
+    if (!record || !(await verifyPassword(password, record.passwordHash))) {
+      return res.status(401).json({ error: "Invalid username or password." });
+    }
+
+    setSessionCookie(res, { id: record.user.id, leetcodeUsername: record.user.leetcodeUsername });
+    res.json(record.user);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST logout
+app.post("/api/logout", (req, res) => {
+  clearSessionCookie(res);
+  res.json({ success: true });
+});
+
+// GET current logged-in user, if any
+app.get("/api/me", async (req, res) => {
+  const session = readSession(req);
+  if (!session) {
+    return res.status(401).json({ error: "Not logged in." });
+  }
+  const user = await getUserById(session.id);
+  if (!user) {
+    clearSessionCookie(res);
+    return res.status(401).json({ error: "Not logged in." });
+  }
+  res.json(user);
+});
+
+// DELETE user — only the account owner can remove themselves
+app.delete("/api/users/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
+  const session = (req as any).user;
+
+  if (session.id !== id) {
+    return res.status(403).json({ error: "You can only remove your own account." });
+  }
 
   try {
     const deleted = await deleteUserById(id);
     if (!deleted) {
       return res.status(404).json({ error: "User not found." });
     }
+    clearSessionCookie(res);
     res.json({ success: true, message: "Cadet removed successfully." });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
