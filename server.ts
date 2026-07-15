@@ -43,6 +43,17 @@ class LeetCodeUnavailableError extends Error {
 app.use(express.json());
 app.use(cookieParser());
 
+// dbReady gates every request behind initDb() completing at least once.
+// On a persistent host this resolves once at boot. On Vercel, the module
+// (and this promise) is created once per cold-started function instance and
+// reused for every invocation handled by that instance, so this still only
+// runs once per instance rather than once per request. Registered before
+// any routes below so it actually applies to all of them.
+const dbReady = initDb();
+app.use((req, res, next) => {
+  dbReady.then(() => next()).catch(next);
+});
+
 // Utility to calculate ranks and progress metrics
 function sortAndRankUsers(users: User[]) {
   // We sort primarily by Weekly Progress (to encourage active, weekly problem solving momentum!)
@@ -622,9 +633,29 @@ app.get("/api/trends", async (req, res) => {
   }
 });
 
+// GET — triggered by Vercel Cron on a schedule (see vercel.json) since a
+// setInterval inside a serverless function instance doesn't reliably persist
+// between invocations. When CRON_SECRET is set, only requests carrying it
+// (as Vercel automatically does for its own cron invocations) are accepted,
+// so this can't be used by anyone to force-trigger a sync.
+app.get("/api/cron/sync", async (req, res) => {
+  if (process.env.CRON_SECRET) {
+    const auth = req.headers.authorization;
+    if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+      return res.status(401).json({ error: "Unauthorized." });
+    }
+  }
+  try {
+    const result = await syncAllUsers();
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Serve frontend assets in production and Vite dev server in development
 async function startServer() {
-  await initDb();
+  await dbReady;
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -640,9 +671,9 @@ async function startServer() {
     });
   }
 
-  // Periodic background sync — refreshes everyone's REAL stats using the
-  // same logic as "Force Sync All". Runs every 30 minutes rather than more
-  // often, out of courtesy to the free public APIs this relies on.
+  // Periodic background sync — only for traditional/persistent hosts. On
+  // Vercel, VERCEL is set and this whole function isn't called at all;
+  // /api/cron/sync + Vercel Cron (see vercel.json) does this job instead.
   setInterval(() => {
     syncAllUsers()
       .then(({ users }) => {
@@ -658,4 +689,15 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  // Traditional host (Render/Railway/Fly/local dev/etc): run the app the
+  // normal way — bind a port, serve static files ourselves, run the
+  // background sync interval.
+  startServer();
+}
+
+// Vercel Functions call the exported handler directly per-request instead
+// of using app.listen() — this is what actually makes the app reachable
+// when deployed there. Harmless to export on other hosts too; nothing
+// imports it there.
+export default app;
