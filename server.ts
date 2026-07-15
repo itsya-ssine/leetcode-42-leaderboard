@@ -1,7 +1,6 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import "dotenv/config";
 import { User, HistoryRecord } from "./src/types.js";
 import {
@@ -658,6 +657,12 @@ async function startServer() {
   await dbReady;
 
   if (process.env.NODE_ENV !== "production") {
+    // Dynamic import — kept out of the module's top-level static imports so
+    // vite/rollup are never loaded at all on Vercel (this whole branch, and
+    // even startServer() itself, never executes there). A static top-level
+    // `import ... from "vite"` would run unconditionally on every cold
+    // start regardless of this if-check, which was crashing every request.
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
