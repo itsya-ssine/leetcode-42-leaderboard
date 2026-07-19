@@ -139,6 +139,14 @@ export default function App() {
       setLeetcodeUsername("");
       setDisplayName("");
       await loadData();
+      // pendingIntra is now cleared (enrollment is done), so leaving the
+      // modal open would otherwise fall back into the "sign in with 42
+      // first" empty state. Give the person a moment to read the success
+      // message, then close it.
+      setTimeout(() => {
+        setIsEnrollOpen(false);
+        setFormSuccess(null);
+      }, 1800);
     } catch (err: any) {
       setFormError(err.message || "An unexpected error occurred.");
     } finally {
