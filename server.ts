@@ -1,5 +1,6 @@
 import express from "express";
 import cookieParser from "cookie-parser";
+import crypto from "crypto";
 import path from "path";
 import "dotenv/config";
 import { User, HistoryRecord } from "./src/types.js";
@@ -7,18 +8,43 @@ import {
   initDb,
   listUsers,
   getUserById,
+  getUserByIntraId,
   findDuplicate,
   insertUser,
   updateUser,
   deleteUserById,
   getMeta,
-  setMeta,
-  getAuthByLeetcodeUsername
+  setMeta
 } from "./db.js";
-import { hashPassword, verifyPassword, setSessionCookie, clearSessionCookie, readSession, requireAuth } from "./auth.js";
+import {
+  setSessionCookie,
+  clearSessionCookie,
+  readSession,
+  requireAuth,
+  requirePendingAuth,
+  PendingSession
+} from "./auth.js";
+import { buildAuthorizeUrl, exchangeCodeForToken, fetchIntraProfile, IntraAuthError } from "./intra.js";
+import { apiLimiter, authLimiter, enrollLimiter, refreshLimiter } from "./rateLimit.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+
+// Needed so express-rate-limit (and req.protocol below) see the real
+// client IP / original scheme when running behind a reverse proxy
+// (Vercel, Render, Railway, etc.) instead of the proxy's own address.
+app.set("trust proxy", 1);
+
+// The exact callback URL 42 will redirect back to. Must be identical to
+// what's registered on the 42 OAuth app AND what's sent in both the
+// /authorize and /token requests. Falling back to a computed URL is
+// convenient for local dev, but on most hosts you should set
+// INTRA_REDIRECT_URI explicitly since preview URLs / proxies can make the
+// computed host unreliable.
+function getRedirectUri(req: express.Request): string {
+  if (process.env.INTRA_REDIRECT_URI) return process.env.INTRA_REDIRECT_URI;
+  return `${req.protocol}://${req.get("host")}/api/auth/42/callback`;
+}
 
 // Thrown when a source positively confirms the username doesn't exist on LeetCode.
 class LeetCodeUserNotFoundError extends Error {
@@ -41,6 +67,11 @@ class LeetCodeUnavailableError extends Error {
 
 app.use(express.json());
 app.use(cookieParser());
+
+// General ceiling on all API traffic. Individual sensitive routes below
+// (OAuth handshake, enrollment, LeetCode-scraping refreshes) layer a
+// stricter, route-specific limiter on top of this one.
+app.use("/api", apiLimiter);
 
 // dbReady gates every request behind initDb() completing at least once.
 // On a persistent host this resolves once at boot. On Vercel, the module
@@ -281,35 +312,105 @@ app.get("/api/users", async (req, res) => {
   }
 });
 
-// POST create user (signup)
-app.post("/api/users", async (req, res) => {
-  const { displayName, leetcodeUsername, intraId, password } = req.body;
+// GET — kicks off the 42 OAuth handshake. Sets a short-lived, httpOnly
+// state cookie (CSRF protection for the redirect flow) and sends the
+// browser to 42's authorize page.
+app.get("/api/auth/42/login", authLimiter, (req, res) => {
+  const state = crypto.randomBytes(24).toString("hex");
+  res.cookie("oauth_state", state, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 10 * 60 * 1000
+  });
+  res.redirect(buildAuthorizeUrl(state, getRedirectUri(req)));
+});
 
-  if (!leetcodeUsername || !intraId) {
-    return res.status(400).json({ error: "LeetCode Username and Intra ID are required." });
-  }
-  if (!password || typeof password !== "string" || password.length < 8) {
-    return res.status(400).json({ error: "A password of at least 8 characters is required." });
+// GET — 42 redirects back here after the person approves (or denies) the
+// login. On success: if this 42 account is already linked to a cadet, log
+// them straight in; otherwise issue a "pending" session (verified 42
+// identity, no LeetCode username yet) and send them to finish enrollment.
+app.get("/api/auth/42/callback", authLimiter, async (req, res) => {
+  const { code, state } = req.query;
+  const savedState = req.cookies?.oauth_state;
+  res.clearCookie("oauth_state");
+
+  if (
+    !code ||
+    typeof code !== "string" ||
+    !state ||
+    typeof state !== "string" ||
+    !savedState ||
+    state !== savedState
+  ) {
+    return res.redirect(
+      `/?authError=${encodeURIComponent("42 login failed or expired — please try again.")}`
+    );
   }
 
   try {
-    // Check if user already exists
-    const duplicate = await findDuplicate(leetcodeUsername, intraId);
+    const redirectUri = getRedirectUri(req);
+    const accessToken = await exchangeCodeForToken(code, redirectUri);
+    const profile = await fetchIntraProfile(accessToken);
+
+    const existing = await getUserByIntraId(profile.intraId);
+    if (existing) {
+      setSessionCookie(res, { kind: "full", id: existing.id, leetcodeUsername: existing.leetcodeUsername });
+      return res.redirect("/");
+    }
+
+    setSessionCookie(res, {
+      kind: "pending",
+      intraId: profile.intraId,
+      intraDisplayName: profile.displayName,
+      intraAvatarUrl: profile.avatarUrl
+    });
+    return res.redirect("/?enroll=1");
+  } catch (error: any) {
+    const message =
+      error instanceof IntraAuthError
+        ? error.message
+        : "Couldn't complete 42 login. Please try again.";
+    console.warn(`[42 OAuth] callback failed: ${error.message}`);
+    return res.redirect(`/?authError=${encodeURIComponent(message)}`);
+  }
+});
+
+// POST — finishes enrollment for someone who just signed in with 42.
+// Requires a pending session; the only thing the client supplies is the
+// LeetCode username (and an optional display name) — the 42 identity
+// itself comes entirely from the verified session, never from the body.
+app.post("/api/enroll", enrollLimiter, requirePendingAuth, async (req, res) => {
+  const pending = (req as any).pending as PendingSession;
+  const { leetcodeUsername, displayName } = req.body;
+
+  if (!leetcodeUsername || typeof leetcodeUsername !== "string" || !leetcodeUsername.trim()) {
+    return res.status(400).json({ error: "LeetCode username is required." });
+  }
+
+  try {
+    const cleanLeetcodeUsername = leetcodeUsername.trim();
+    const duplicate = await findDuplicate(cleanLeetcodeUsername, pending.intraId);
     if (duplicate) {
-      return res.status(400).json({ error: "Cadet with this LeetCode or Intra ID already on the board." });
+      return res
+        .status(400)
+        .json({ error: "A cadet with this LeetCode username or 42 account is already on the board." });
     }
 
     // Fetch real initial stats — throws if the username doesn't exist or
     // can't currently be verified.
-    const scraped = await scrapeLeetCodeProfile(leetcodeUsername);
+    const scraped = await scrapeLeetCodeProfile(cleanLeetcodeUsername);
     const todayStr = new Date().toISOString().split("T")[0];
 
     const newUser: User = {
       id: `cadet-${Date.now()}`,
-      displayName: displayName || leetcodeUsername,
-      leetcodeUsername,
-      intraId,
-      avatarUrl: scraped.avatarUrl || `https://images.unsplash.com/photo-${Math.floor(Math.random() * 5000) + 1500000000}?auto=format&fit=crop&w=120&q=80`,
+      displayName: (typeof displayName === "string" && displayName.trim()) || pending.intraDisplayName,
+      leetcodeUsername: cleanLeetcodeUsername,
+      intraId: pending.intraId,
+      avatarUrl:
+        scraped.avatarUrl ||
+        pending.intraAvatarUrl ||
+        `https://images.unsplash.com/photo-${Math.floor(Math.random() * 5000) + 1500000000}?auto=format&fit=crop&w=120&q=80`,
       allTimeSolved: scraped.allTimeSolved,
       easySolved: scraped.easySolved,
       mediumSolved: scraped.mediumSolved,
@@ -332,11 +433,10 @@ app.post("/api/users", async (req, res) => {
       ]
     };
 
-    const passwordHash = await hashPassword(password);
-    await insertUser(newUser, passwordHash);
+    await insertUser(newUser);
 
-    // Log the newly-created account straight in, same as a normal login would.
-    setSessionCookie(res, { id: newUser.id, leetcodeUsername: newUser.leetcodeUsername });
+    // Promote the pending session to a full one now that enrollment is done.
+    setSessionCookie(res, { kind: "full", id: newUser.id, leetcodeUsername: newUser.leetcodeUsername });
 
     res.status(201).json(newUser);
   } catch (error: any) {
@@ -350,46 +450,39 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
-// POST login
-app.post("/api/login", async (req, res) => {
-  const { leetcodeUsername, password } = req.body;
-  if (!leetcodeUsername || !password) {
-    return res.status(400).json({ error: "LeetCode username and password are required." });
-  }
-
-  try {
-    const record = await getAuthByLeetcodeUsername(leetcodeUsername);
-    // Same generic error whether the username doesn't exist or the password
-    // is wrong — don't let login responses reveal which usernames are registered.
-    if (!record || !(await verifyPassword(password, record.passwordHash))) {
-      return res.status(401).json({ error: "Invalid username or password." });
-    }
-
-    setSessionCookie(res, { id: record.user.id, leetcodeUsername: record.user.leetcodeUsername });
-    res.json(record.user);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // POST logout
 app.post("/api/logout", (req, res) => {
   clearSessionCookie(res);
   res.json({ success: true });
 });
 
-// GET current logged-in user, if any
-app.get("/api/me", async (req, res) => {
+// GET current auth state: "guest" (no session), "pending" (signed in with
+// 42, hasn't picked a LeetCode username yet), or "authenticated" (fully
+// enrolled cadet). The frontend uses this single endpoint to decide what
+// to render instead of juggling several auth calls.
+app.get("/api/auth/session", async (req, res) => {
   const session = readSession(req);
   if (!session) {
-    return res.status(401).json({ error: "Not logged in." });
+    return res.json({ status: "guest" });
   }
+
+  if (session.kind === "pending") {
+    return res.json({
+      status: "pending",
+      intra: {
+        intraId: session.intraId,
+        displayName: session.intraDisplayName,
+        avatarUrl: session.intraAvatarUrl
+      }
+    });
+  }
+
   const user = await getUserById(session.id);
   if (!user) {
     clearSessionCookie(res);
-    return res.status(401).json({ error: "Not logged in." });
+    return res.json({ status: "guest" });
   }
-  res.json(user);
+  res.json({ status: "authenticated", user });
 });
 
 // DELETE user — only the account owner can remove themselves
@@ -414,7 +507,7 @@ app.delete("/api/users/:id", requireAuth, async (req, res) => {
 });
 
 // POST refresh individual user
-app.post("/api/users/:id/refresh", async (req, res) => {
+app.post("/api/users/:id/refresh", refreshLimiter, async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -556,7 +649,7 @@ async function syncAllUsers(): Promise<{ users: User[]; lastSyncAll: string }> {
 }
 
 // POST refresh all users
-app.post("/api/refresh-all", async (req, res) => {
+app.post("/api/refresh-all", refreshLimiter, async (req, res) => {
   try {
     const result = await syncAllUsers();
     res.json({ success: true, ...result });

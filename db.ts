@@ -41,8 +41,10 @@ export async function initDb(): Promise<void> {
     "write"
   );
 
-  // Migration for DBs created before password_hash existed — CREATE TABLE
-  // IF NOT EXISTS above won't add the column to an already-existing table.
+  // password_hash is a leftover from the old password-based signup flow.
+  // Authentication is now entirely via 42 OAuth (see intra.ts/auth.ts), so
+  // nothing writes to this column anymore — it's kept only so DBs created
+  // before this change don't need a manual migration.
   try {
     await client.execute(`ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''`);
   } catch {
@@ -81,18 +83,16 @@ export async function getUserById(id: string): Promise<User | null> {
   return res.rows.length ? rowToUser(res.rows[0] as unknown as Record<string, unknown>) : null;
 }
 
-// Auth-only lookup — includes the password hash, unlike getUserById/listUsers.
-// Never return this row directly from an API route; pull out what you need.
-export async function getAuthByLeetcodeUsername(
-  leetcodeUsername: string
-): Promise<{ user: User; passwordHash: string } | null> {
+// Looks up a cadet by their 42 (Intra) login — this is how the OAuth
+// callback decides whether someone who just signed in with 42 already has
+// an account (log them in) or still needs to enroll (issue a pending
+// session instead).
+export async function getUserByIntraId(intraId: string): Promise<User | null> {
   const res = await client.execute({
-    sql: "SELECT * FROM users WHERE lower(leetcode_username) = lower(?)",
-    args: [leetcodeUsername]
+    sql: "SELECT * FROM users WHERE lower(intra_id) = lower(?)",
+    args: [intraId]
   });
-  if (!res.rows.length) return null;
-  const row = res.rows[0] as unknown as Record<string, unknown>;
-  return { user: rowToUser(row), passwordHash: (row.password_hash as string) || "" };
+  return res.rows.length ? rowToUser(res.rows[0] as unknown as Record<string, unknown>) : null;
 }
 
 export async function findDuplicate(leetcodeUsername: string, intraId: string): Promise<boolean> {
@@ -103,13 +103,13 @@ export async function findDuplicate(leetcodeUsername: string, intraId: string): 
   return res.rows.length > 0;
 }
 
-export async function insertUser(user: User, passwordHash: string): Promise<void> {
+export async function insertUser(user: User): Promise<void> {
   await client.execute({
     sql: `INSERT INTO users
       (id, display_name, leetcode_username, intra_id, avatar_url, all_time_solved,
        easy_solved, medium_solved, hard_solved, weekly_progress, monthly_progress,
-       last_updated, history, password_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       last_updated, history)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       user.id,
       user.displayName,
@@ -123,8 +123,7 @@ export async function insertUser(user: User, passwordHash: string): Promise<void
       user.weeklyProgress,
       user.monthlyProgress,
       user.lastUpdated,
-      JSON.stringify(user.history),
-      passwordHash
+      JSON.stringify(user.history)
     ]
   });
 }

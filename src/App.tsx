@@ -39,7 +39,7 @@ import { useAuth } from "./AuthContext.js";
 import LoginModal from "./LoginModal.js";
 
 export default function App() {
-  const { user: currentUser, logout, refreshMe } = useAuth();
+  const { status: authStatus, user: currentUser, pendingIntra, logout, completeEnrollment } = useAuth();
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [lastSyncAll, setLastSyncAll] = useState<string>("");
@@ -49,16 +49,44 @@ export default function App() {
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [pinnedUsers, setPinnedUsers] = useState<string[]>([]);
-  
-  // Add cadet form state
+
+  // Enroll (finish-signup) form state — the 42 identity itself comes from
+  // pendingIntra above, verified server-side; the cadet only ever types
+  // their LeetCode username here.
   const [leetcodeUsername, setLeetcodeUsername] = useState("");
-  const [intraId, setIntraId] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
   const [isEnrollOpen, setIsEnrollOpen] = useState(false);
+  const [authBanner, setAuthBanner] = useState<string | null>(null);
+
+  // Pick up ?enroll=1 / ?authError=... left by the 42 OAuth redirect, then
+  // scrub them from the URL so refreshing the page doesn't replay them.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const authError = params.get("authError");
+    const enroll = params.get("enroll");
+    if (authError) {
+      setAuthBanner(authError);
+    }
+    if (authError || enroll) {
+      params.delete("authError");
+      params.delete("enroll");
+      const rest = params.toString();
+      window.history.replaceState({}, "", rest ? `?${rest}` : window.location.pathname);
+    }
+  }, []);
+
+  // Once the server confirms we're in the "signed in with 42, not enrolled
+  // yet" state, pop the enroll modal open automatically.
+  useEffect(() => {
+    if (authStatus === "pending") {
+      setFormError(null);
+      setFormSuccess(null);
+      setIsEnrollOpen(true);
+    }
+  }, [authStatus]);
 
   // Trend analysis state
   const [trendData, setTrendData] = useState<any>(null);
@@ -91,45 +119,25 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Handle cadet onboarding
+  // Handle cadet onboarding — the 42 identity is already verified (this
+  // form only ever renders once authStatus === "pending"), so all we send
+  // is the LeetCode username.
   const handleAddCadet = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
     setFormSuccess(null);
 
-    if (!leetcodeUsername.trim() || !intraId.trim()) {
-      setFormError("LeetCode Username and Intra 42 ID are required.");
-      return;
-    }
-    if (!password || password.length < 8) {
-      setFormError("Choose a password of at least 8 characters.");
+    if (!leetcodeUsername.trim()) {
+      setFormError("LeetCode Username is required.");
       return;
     }
 
     setIsSubmitting(true);
     try {
-      const response = await fetch("/api/users", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          leetcodeUsername: leetcodeUsername.trim(),
-          intraId: intraId.trim(),
-          displayName: displayName.trim() || leetcodeUsername.trim(),
-          password
-        })
-      });
-
-      const result = await response.json();
-      if (!response.ok) {
-        throw new Error(result.error || "Failed to onboard cadet.");
-      }
-
+      const result = await completeEnrollment(leetcodeUsername.trim(), displayName.trim());
       setFormSuccess(`Cadet @${result.displayName} enrolled — fetched ${result.allTimeSolved} solved problems from LeetCode.`);
       setLeetcodeUsername("");
-      setIntraId("");
       setDisplayName("");
-      setPassword("");
-      await refreshMe(); // signup logs you in automatically
       await loadData();
     } catch (err: any) {
       setFormError(err.message || "An unexpected error occurred.");
@@ -308,7 +316,7 @@ export default function App() {
             </button>
 
             {/* Auth control */}
-            {currentUser ? (
+            {authStatus === "authenticated" && currentUser ? (
               <div className="flex items-center gap-3">
                 <span className="text-xs font-mono text-zinc-400">
                   Logged in as <span className="text-teal-400 font-bold">@{currentUser.leetcodeUsername}</span>
@@ -320,32 +328,47 @@ export default function App() {
                   Log Out
                 </button>
               </div>
+            ) : authStatus === "pending" && pendingIntra ? (
+              <button
+                onClick={() => {
+                  setFormError(null);
+                  setFormSuccess(null);
+                  setIsEnrollOpen(true);
+                }}
+                className="flex items-center gap-2 bg-teal-500 hover:bg-teal-400 text-black px-5 py-3 border border-transparent transition duration-200 text-xs font-mono font-black uppercase tracking-widest cursor-pointer rounded-sm"
+                id="open-enroll-btn"
+              >
+                <UserPlus className="w-4 h-4 text-black" />
+                Finish Enrollment (@{pendingIntra.intraId})
+              </button>
             ) : (
               <button
                 onClick={() => setIsLoginOpen(true)}
-                className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-850 text-zinc-300 hover:text-white px-5 py-3 border border-zinc-800 hover:border-zinc-700 transition duration-200 text-xs font-mono font-bold uppercase tracking-widest cursor-pointer rounded-sm"
+                className="flex items-center gap-2 bg-teal-500 hover:bg-teal-400 text-black px-5 py-3 border border-transparent transition duration-200 text-xs font-mono font-black uppercase tracking-widest cursor-pointer rounded-sm"
+                id="open-enroll-btn"
               >
-                Log In
+                <UserPlus className="w-4 h-4 text-black" />
+                Log In With 42
               </button>
             )}
 
-            {/* Enroll Cadet Trigger Button */}
-            <button
-              onClick={() => {
-                setFormError(null);
-                setFormSuccess(null);
-                setIsEnrollOpen(true);
-              }}
-              disabled={loading}
-              className="flex items-center gap-2 bg-teal-500 hover:bg-teal-400 text-black px-5 py-3 border border-transparent transition duration-200 text-xs font-mono font-black uppercase tracking-widest cursor-pointer rounded-sm"
-              id="open-enroll-btn"
-            >
-              <UserPlus className="w-4 h-4 text-black" />
-              Enroll Cadet
-            </button>
-
           </div>
         </header>
+
+        {/* 42 OAuth error banner (e.g. denied / expired login attempt) */}
+        {authBanner && (
+          <div className="bg-red-950/20 text-red-400 text-xs p-3 rounded-sm border border-red-500/20 flex items-start gap-2 mb-6">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{authBanner}</span>
+            <button
+              onClick={() => setAuthBanner(null)}
+              className="ml-auto text-red-400/70 hover:text-red-300 cursor-pointer"
+              aria-label="Dismiss"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
         {/* High-Level Roster Stats Banner */}
         <section className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-10" id="stats-banner">
@@ -648,10 +671,30 @@ export default function App() {
                   <X className="w-4 h-4" />
                 </button>
 
-                <h3 className="text-sm font-mono uppercase tracking-[0.2em] text-zinc-300 mb-6 flex items-center gap-2">
+                <h3 className="text-sm font-mono uppercase tracking-[0.2em] text-zinc-300 mb-2 flex items-center gap-2">
                   <UserPlus className="w-4 h-4 text-teal-400" />
-                  Enroll Cadet
+                  Finish Enrollment
                 </h3>
+
+                {pendingIntra ? (
+                  <div className="flex items-center gap-3 mb-6 bg-zinc-950 border border-zinc-800 rounded-sm p-3">
+                    {pendingIntra.avatarUrl && (
+                      <img
+                        src={pendingIntra.avatarUrl}
+                        alt={pendingIntra.displayName}
+                        className="w-9 h-9 rounded-sm object-cover border border-zinc-800"
+                      />
+                    )}
+                    <div>
+                      <div className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider font-mono">Verified via 42</div>
+                      <div className="text-xs text-teal-400 font-mono font-bold">@{pendingIntra.intraId}</div>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-zinc-500 mb-6">
+                    Sign in with 42 first — your Intra identity is confirmed by 42 itself, not typed in here.
+                  </p>
+                )}
 
                 <form onSubmit={handleAddCadet} className="flex flex-col gap-4">
                   <div>
@@ -663,18 +706,7 @@ export default function App() {
                       onChange={(e) => setLeetcodeUsername(e.target.value)}
                       className="w-full bg-zinc-950 text-zinc-100 placeholder-zinc-700 text-xs font-mono uppercase tracking-widest px-3 py-2.5 rounded-sm border border-zinc-800 focus:border-teal-500 focus:outline-none transition-all"
                       required
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[10px] text-zinc-500 block mb-1 uppercase font-bold tracking-wider font-mono">42 Intra ID</label>
-                    <input 
-                      type="text"
-                      placeholder="e.g. jsmith"
-                      value={intraId}
-                      onChange={(e) => setIntraId(e.target.value)}
-                      className="w-full bg-zinc-950 text-zinc-100 placeholder-zinc-700 text-xs font-mono uppercase tracking-widest px-3 py-2.5 rounded-sm border border-zinc-800 focus:border-teal-500 focus:outline-none transition-all"
-                      required
+                      disabled={!pendingIntra}
                     />
                   </div>
 
@@ -686,21 +718,22 @@ export default function App() {
                       value={displayName}
                       onChange={(e) => setDisplayName(e.target.value)}
                       className="w-full bg-zinc-950 text-zinc-100 placeholder-zinc-700 text-xs font-mono uppercase tracking-widest px-3 py-2.5 rounded-sm border border-zinc-800 focus:border-teal-500 focus:outline-none transition-all"
+                      disabled={!pendingIntra}
                     />
                   </div>
 
-                  <div>
-                    <label className="text-[10px] text-zinc-500 block mb-1 uppercase font-bold tracking-wider font-mono">Password</label>
-                    <input
-                      type="password"
-                      placeholder="At least 8 characters"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="w-full bg-zinc-950 text-zinc-100 placeholder-zinc-700 text-xs font-mono tracking-widest px-3 py-2.5 rounded-sm border border-zinc-800 focus:border-teal-500 focus:outline-none transition-all"
-                      required
-                      minLength={8}
-                    />
-                  </div>
+                  {!pendingIntra && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEnrollOpen(false);
+                        setIsLoginOpen(true);
+                      }}
+                      className="w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-black uppercase tracking-widest text-xs py-3 rounded-sm transition duration-200 cursor-pointer"
+                    >
+                      Sign In With 42 First
+                    </button>
+                  )}
 
                   {formError && (
                     <div className="bg-red-950/20 text-red-400 text-xs p-3 rounded-sm border border-red-500/20 flex items-start gap-2">
@@ -718,8 +751,8 @@ export default function App() {
 
                   <button
                     type="submit"
-                    disabled={isSubmitting}
-                    className="w-full bg-teal-500 hover:bg-teal-400 text-black font-black uppercase tracking-widest text-xs py-3 rounded-sm transition duration-200 shadow-md flex items-center justify-center gap-2 cursor-pointer mt-2"
+                    disabled={isSubmitting || !pendingIntra}
+                    className="w-full bg-teal-500 hover:bg-teal-400 text-black font-black uppercase tracking-widest text-xs py-3 rounded-sm transition duration-200 shadow-md flex items-center justify-center gap-2 cursor-pointer mt-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {isSubmitting ? (
                       <>

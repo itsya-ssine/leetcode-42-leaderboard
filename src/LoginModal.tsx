@@ -1,30 +1,10 @@
-import React, { useState } from "react";
+import React from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { LogIn, X, AlertTriangle } from "lucide-react";
+import { LogIn, X } from "lucide-react";
 import { useAuth } from "./AuthContext.js";
 
 export default function LoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { login } = useAuth();
-  const [leetcodeUsername, setLeetcodeUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setSubmitting(true);
-    try {
-      await login(leetcodeUsername.trim(), password);
-      setLeetcodeUsername("");
-      setPassword("");
-      onClose();
-    } catch (err: any) {
-      setError(err.message || "Login failed.");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const { loginWithIntra } = useAuth();
 
   return (
     <AnimatePresence>
@@ -52,54 +32,24 @@ export default function LoginModal({ open, onClose }: { open: boolean; onClose: 
               <X className="w-4 h-4" />
             </button>
 
-            <h3 className="text-sm font-mono uppercase tracking-[0.2em] text-zinc-300 mb-6 flex items-center gap-2">
+            <h3 className="text-sm font-mono uppercase tracking-[0.2em] text-zinc-300 mb-3 flex items-center gap-2">
               <LogIn className="w-4 h-4 text-teal-400" />
               Cadet Login
             </h3>
 
-            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-              <div>
-                <label className="text-[10px] text-zinc-500 block mb-1 uppercase font-bold tracking-wider font-mono">
-                  LeetCode Username
-                </label>
-                <input
-                  type="text"
-                  value={leetcodeUsername}
-                  onChange={(e) => setLeetcodeUsername(e.target.value)}
-                  className="w-full bg-zinc-950 text-zinc-100 placeholder-zinc-700 text-xs font-mono uppercase tracking-widest px-3 py-2.5 rounded-sm border border-zinc-800 focus:border-teal-500 focus:outline-none transition-all"
-                  required
-                  autoFocus
-                />
-              </div>
+            <p className="text-xs text-zinc-500 mb-6 leading-relaxed">
+              Login runs through your 42 (Intra) account — no separate password to
+              remember. First time here? Signing in with 42 also starts your
+              enrollment; you'll just add your LeetCode username afterward.
+            </p>
 
-              <div>
-                <label className="text-[10px] text-zinc-500 block mb-1 uppercase font-bold tracking-wider font-mono">
-                  Password
-                </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-zinc-950 text-zinc-100 placeholder-zinc-700 text-xs font-mono tracking-widest px-3 py-2.5 rounded-sm border border-zinc-800 focus:border-teal-500 focus:outline-none transition-all"
-                  required
-                />
-              </div>
-
-              {error && (
-                <div className="bg-red-950/20 text-red-400 text-xs p-3 rounded-sm border border-red-500/20 flex items-start gap-2">
-                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{error}</span>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full bg-teal-500 hover:bg-teal-400 text-black font-black uppercase tracking-widest text-xs py-3 rounded-sm transition duration-200 shadow-md flex items-center justify-center gap-2 cursor-pointer mt-2 disabled:opacity-50"
-              >
-                {submitting ? "Logging in..." : "Log In"}
-              </button>
-            </form>
+            <button
+              onClick={loginWithIntra}
+              className="w-full bg-teal-500 hover:bg-teal-400 text-black font-black uppercase tracking-widest text-xs py-3 rounded-sm transition duration-200 shadow-md flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <LogIn className="w-4 h-4" />
+              Continue with 42
+            </button>
           </motion.div>
         </div>
       )}
