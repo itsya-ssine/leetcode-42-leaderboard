@@ -310,7 +310,7 @@ export default function App() {
         <header className="flex flex-col lg:flex-row justify-between items-start lg:items-end mb-10 border-b border-zinc-800 pb-6 gap-6">
           <div>
             <h1 className="text-6xl md:text-8xl font-black tracking-tighter leading-none italic uppercase text-white">
-              Leader<span className="text-teal-500">42</span>
+              Leader<span className="text-teal-500">1337</span>
             </h1>
             <p className="mt-2 text-zinc-500 font-mono text-xs md:text-sm tracking-widest uppercase">
               Weekly LeetCode Sprint
