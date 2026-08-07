@@ -629,12 +629,6 @@ export default function App() {
                 </AnimatePresence>
               </div>
 
-              {/* Info footer */}
-              <div className="flex items-center justify-between text-[10px] text-zinc-600 font-mono uppercase tracking-widest pt-4 border-t border-zinc-900 mt-4">
-                <span>Total Roster Size // {users.length} enrolled cadets</span>
-                <span>Sorted by Weekly Momentum to prioritize active coding sprints</span>
-              </div>
-
             </section>
 
           </div>
