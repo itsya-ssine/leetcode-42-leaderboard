@@ -21,6 +21,9 @@ interface AuthContextValue {
   logout: () => Promise<void>;
   refreshSession: () => Promise<void>;
   completeEnrollment: (leetcodeUsername: string, displayName?: string) => Promise<User>;
+  // Lets an already-enrolled cadet repoint their board entry at a
+  // different LeetCode account. Re-verified server-side before saving.
+  updateLeetcodeUsername: (leetcodeUsername: string) => Promise<User>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -88,9 +91,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return data as User;
   }, []);
 
+  // Sends the new LeetCode username to the server, which re-verifies it
+  // against LeetCode, re-links the row, and refreshes stats under the new
+  // handle before responding with the updated cadet record.
+  const updateLeetcodeUsername = useCallback(async (leetcodeUsername: string) => {
+    if (!user) {
+      throw new Error("You must be logged in to change your LeetCode username.");
+    }
+    const res = await fetch(`/api/users/${user.id}/leetcode-username`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ leetcodeUsername })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to update LeetCode username.");
+    }
+    setUser(data);
+    return data as User;
+  }, [user]);
+
   return (
     <AuthContext.Provider
-      value={{ status, user, pendingIntra, loginWithIntra, logout, refreshSession, completeEnrollment }}
+      value={{ status, user, pendingIntra, loginWithIntra, logout, refreshSession, completeEnrollment, updateLeetcodeUsername }}
     >
       {children}
     </AuthContext.Provider>

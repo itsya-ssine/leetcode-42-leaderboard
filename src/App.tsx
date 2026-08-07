@@ -17,6 +17,7 @@ import {
   Pin,
   TrendingUp,
   PieChart as PieChartIcon,
+  Pencil,
   X
 } from "lucide-react";
 import { 
@@ -39,14 +40,13 @@ import { useAuth } from "./AuthContext.js";
 import LoginModal from "./LoginModal.js";
 
 export default function App() {
-  const { status: authStatus, user: currentUser, pendingIntra, logout, completeEnrollment } = useAuth();
+  const { status: authStatus, user: currentUser, pendingIntra, logout, completeEnrollment, updateLeetcodeUsername } = useAuth();
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [lastSyncAll, setLastSyncAll] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"weekly" | "allTime">("allTime");
   const [loading, setLoading] = useState(true);
-  const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [pinnedUsers, setPinnedUsers] = useState<string[]>([]);
 
@@ -60,6 +60,14 @@ export default function App() {
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
   const [isEnrollOpen, setIsEnrollOpen] = useState(false);
   const [authBanner, setAuthBanner] = useState<string | null>(null);
+
+  // Edit LeetCode username modal state — lets an already-enrolled cadet
+  // repoint their board entry at a different LeetCode account.
+  const [isEditUsernameOpen, setIsEditUsernameOpen] = useState(false);
+  const [editLeetcodeUsername, setEditLeetcodeUsername] = useState("");
+  const [isUpdatingUsername, setIsUpdatingUsername] = useState(false);
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+  const [usernameSuccess, setUsernameSuccess] = useState<string | null>(null);
 
   // Pick up ?enroll=1 / ?authError=... left by the 42 OAuth redirect, then
   // scrub them from the URL so refreshing the page doesn't replay them.
@@ -112,7 +120,7 @@ export default function App() {
   useEffect(() => {
     loadData();
     // Poll for updates so everyone sees new stats without a manual reload —
-    // the server also runs a real background sync every 30 minutes.
+    // the server also runs a real background sync every 6 hours.
     const interval = setInterval(() => {
       loadData();
     }, 15000); // poll every 15s so multiple viewers stay in sync
@@ -154,6 +162,33 @@ export default function App() {
     }
   };
 
+  // Handle updating the logged-in cadet's own LeetCode username.
+  const handleUpdateUsername = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setUsernameError(null);
+    setUsernameSuccess(null);
+
+    if (!editLeetcodeUsername.trim()) {
+      setUsernameError("LeetCode Username is required.");
+      return;
+    }
+
+    setIsUpdatingUsername(true);
+    try {
+      const result = await updateLeetcodeUsername(editLeetcodeUsername.trim());
+      setUsernameSuccess(`LeetCode username updated to @${result.leetcodeUsername}.`);
+      await loadData();
+      setTimeout(() => {
+        setIsEditUsernameOpen(false);
+        setUsernameSuccess(null);
+      }, 1500);
+    } catch (err: any) {
+      setUsernameError(err.message || "An unexpected error occurred.");
+    } finally {
+      setIsUpdatingUsername(false);
+    }
+  };
+
   // Handle individual refresh / scrape execution
   const handleRefreshUser = async (id: string) => {
     setRefreshingId(id);
@@ -168,22 +203,6 @@ export default function App() {
       alert(err.message || "Couldn't refresh this cadet's stats. Their numbers are unchanged — try again shortly.");
     } finally {
       setRefreshingId(null);
-    }
-  };
-
-  // Handle batch refresh / sync
-  const handleSyncAll = async () => {
-    setIsSyncingAll(true);
-    try {
-      const res = await fetch("/api/refresh-all", { method: "POST" });
-      if (!res.ok) {
-        throw new Error("Failed to sync entire roster.");
-      }
-      await loadData();
-    } catch (err) {
-      alert("Failed to batch update. Try again later.");
-    } finally {
-      setIsSyncingAll(false);
     }
   };
 
@@ -312,22 +331,24 @@ export default function App() {
               </div>
             </div>
 
-            {/* Force Sync All Trigger button with bold accent styling */}
-            <button
-              onClick={handleSyncAll}
-              disabled={isSyncingAll || loading}
-              className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-850 text-zinc-300 hover:text-white px-5 py-3 border border-zinc-800 hover:border-zinc-700 transition duration-200 text-xs font-mono font-bold uppercase tracking-widest disabled:opacity-50 cursor-pointer rounded-sm"
-              id="sync-all-btn"
-            >
-              <RefreshCw className={`w-4 h-4 text-teal-400 ${isSyncingAll ? "animate-spin" : ""}`} />
-              {isSyncingAll ? "Syncing..." : "Force Sync All"}
-            </button>
-
             {/* Auth control */}
             {authStatus === "authenticated" && currentUser ? (
               <div className="flex items-center gap-3">
-                <span className="text-xs font-mono text-zinc-400">
+                <span className="text-xs font-mono text-zinc-400 flex items-center gap-1.5">
                   Logged in as <span className="text-teal-400 font-bold">@{currentUser.leetcodeUsername}</span>
+                  <button
+                    onClick={() => {
+                      setUsernameError(null);
+                      setUsernameSuccess(null);
+                      setEditLeetcodeUsername(currentUser.leetcodeUsername);
+                      setIsEditUsernameOpen(true);
+                    }}
+                    className="text-zinc-500 hover:text-teal-400 p-1 rounded-sm hover:bg-zinc-850 transition-colors cursor-pointer"
+                    title="Change LeetCode Username"
+                    id="edit-username-btn"
+                  >
+                    <Pencil className="w-3 h-3" />
+                  </button>
                 </span>
                 <button
                   onClick={() => logout()}
@@ -771,6 +792,95 @@ export default function App() {
                       <>
                         <UserPlus className="w-4 h-4 text-black" />
                         Enroll & Scrape Profile
+                      </>
+                    )}
+                  </button>
+                </form>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Edit LeetCode Username Modal Popup */}
+        <AnimatePresence>
+          {isEditUsernameOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              {/* Backdrop */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setIsEditUsernameOpen(false)}
+                className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+              />
+
+              {/* Modal Box */}
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 15 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 15 }}
+                transition={{ type: "spring", duration: 0.4, bounce: 0.15 }}
+                className="bg-zinc-900 border border-zinc-800 p-6 rounded-sm w-full max-w-md relative z-10 shadow-2xl"
+                id="edit-username-modal"
+              >
+                <button
+                  onClick={() => setIsEditUsernameOpen(false)}
+                  className="absolute top-4 right-4 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-850 p-1.5 rounded-sm transition-colors cursor-pointer"
+                  aria-label="Close modal"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+
+                <h3 className="text-sm font-mono uppercase tracking-[0.2em] text-zinc-300 mb-2 flex items-center gap-2">
+                  <Pencil className="w-4 h-4 text-teal-400" />
+                  Change LeetCode Username
+                </h3>
+
+                <p className="text-xs text-zinc-500 mb-6">
+                  We'll re-verify the new username against LeetCode and refresh your stats. Your Intra identity stays the same.
+                </p>
+
+                <form onSubmit={handleUpdateUsername} className="flex flex-col gap-4">
+                  <div>
+                    <label className="text-[10px] text-zinc-500 block mb-1 uppercase font-bold tracking-wider font-mono">LeetCode Username</label>
+                    <input 
+                      type="text"
+                      placeholder="e.g. jsmith"
+                      value={editLeetcodeUsername}
+                      onChange={(e) => setEditLeetcodeUsername(e.target.value)}
+                      className="w-full bg-zinc-950 text-zinc-100 placeholder-zinc-700 text-xs font-mono uppercase tracking-widest px-3 py-2.5 rounded-sm border border-zinc-800 focus:border-teal-500 focus:outline-none transition-all"
+                      required
+                    />
+                  </div>
+
+                  {usernameError && (
+                    <div className="bg-red-950/20 text-red-400 text-xs p-3 rounded-sm border border-red-500/20 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{usernameError}</span>
+                    </div>
+                  )}
+
+                  {usernameSuccess && (
+                    <div className="bg-teal-950/20 text-teal-400 text-xs p-3 rounded-sm border border-teal-500/20 flex items-start gap-2">
+                      <Check className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{usernameSuccess}</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={isUpdatingUsername}
+                    className="w-full bg-teal-500 hover:bg-teal-400 text-black font-black uppercase tracking-widest text-xs py-3 rounded-sm transition duration-200 shadow-md flex items-center justify-center gap-2 cursor-pointer mt-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isUpdatingUsername ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin text-black" />
+                        Verifying...
+                      </>
+                    ) : (
+                      <>
+                        <Pencil className="w-4 h-4 text-black" />
+                        Save Username
                       </>
                     )}
                   </button>

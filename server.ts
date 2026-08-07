@@ -10,8 +10,10 @@ import {
   getUserById,
   getUserByIntraId,
   findDuplicate,
+  isLeetcodeUsernameTaken,
   insertUser,
   updateUser,
+  updateLeetcodeUsername,
   deleteUserById,
   getMeta,
   setMeta
@@ -506,6 +508,102 @@ app.delete("/api/users/:id", requireAuth, async (req, res) => {
   }
 });
 
+// PATCH — lets a cadet change the LeetCode username linked to their own
+// row. Only the account owner can do this (same ownership check as
+// DELETE above). The new username is re-verified against LeetCode before
+// anything is saved, and stats are refreshed under the new handle in the
+// same request so the board never shows a stale mix of old/new numbers.
+app.patch("/api/users/:id/leetcode-username", refreshLimiter, requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const session = (req as any).user;
+
+  if (session.id !== id) {
+    return res.status(403).json({ error: "You can only change your own LeetCode username." });
+  }
+
+  const { leetcodeUsername } = req.body;
+  if (!leetcodeUsername || typeof leetcodeUsername !== "string" || !leetcodeUsername.trim()) {
+    return res.status(400).json({ error: "LeetCode username is required." });
+  }
+
+  const cleanLeetcodeUsername = leetcodeUsername.trim();
+
+  try {
+    const user = await getUserById(id);
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // No-op if it's the same username (case-insensitive) — nothing to verify or save.
+    if (cleanLeetcodeUsername.toLowerCase() === user.leetcodeUsername.toLowerCase()) {
+      return res.json(user);
+    }
+
+    const taken = await isLeetcodeUsernameTaken(cleanLeetcodeUsername, id);
+    if (taken) {
+      return res.status(400).json({ error: "That LeetCode username is already linked to another cadet." });
+    }
+
+    // Verify the new username actually exists on LeetCode before saving
+    // anything — never store an unverified username.
+    const scraped = await scrapeLeetCodeProfile(cleanLeetcodeUsername);
+
+    user.leetcodeUsername = cleanLeetcodeUsername;
+    user.allTimeSolved = scraped.allTimeSolved;
+    user.easySolved = scraped.easySolved;
+    user.mediumSolved = scraped.mediumSolved;
+    user.hardSolved = scraped.hardSolved;
+    if (scraped.avatarUrl) {
+      user.avatarUrl = scraped.avatarUrl;
+    }
+    user.lastUpdated = new Date().toISOString();
+
+    // Snapshot today under the new handle so weekly/monthly deltas keep
+    // working, same pattern as the refresh endpoint below.
+    const todayStr = new Date().toISOString().split("T")[0];
+    const existingHistoryIndex = user.history.findIndex(h => h.date === todayStr);
+    if (existingHistoryIndex !== -1) {
+      user.history[existingHistoryIndex] = {
+        date: todayStr,
+        solvedCount: user.allTimeSolved,
+        easy: user.easySolved,
+        medium: user.mediumSolved,
+        hard: user.hardSolved,
+        weeklyProgress: user.weeklyProgress
+      };
+    } else {
+      user.history.push({
+        date: todayStr,
+        solvedCount: user.allTimeSolved,
+        easy: user.easySolved,
+        medium: user.mediumSolved,
+        hard: user.hardSolved,
+        weeklyProgress: user.weeklyProgress
+      });
+      if (user.history.length > 60) {
+        user.history.shift();
+      }
+    }
+
+    await updateLeetcodeUsername(id, cleanLeetcodeUsername);
+    await updateUser(user);
+
+    // The session JWT carries leetcodeUsername (see auth.ts), so it needs
+    // reissuing too or the cookie would keep pointing at the old handle.
+    setSessionCookie(res, { kind: "full", id: user.id, leetcodeUsername: user.leetcodeUsername });
+
+    res.json(user);
+  } catch (error: any) {
+    if (error instanceof LeetCodeUserNotFoundError) {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error instanceof LeetCodeUnavailableError) {
+      return res.status(503).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // POST refresh individual user
 app.post("/api/users/:id/refresh", refreshLimiter, async (req, res) => {
   const { id } = req.params;
@@ -582,9 +680,9 @@ app.post("/api/users/:id/refresh", refreshLimiter, async (req, res) => {
   }
 });
 
-// Refreshes every tracked user's real stats. Shared by the manual
-// "Force Sync All" route and the periodic background job below — neither
-// one invents numbers; both just call the same real fetch logic.
+// Refreshes every tracked user's real stats. Shared by the periodic
+// background job below (every 6 hours) and the /api/refresh-all route —
+// neither one invents numbers, both just call the same real fetch logic.
 async function syncAllUsers(): Promise<{ users: User[]; lastSyncAll: string }> {
   const users = await listUsers();
   console.log(`[Sync All] Refreshing ${users.length} users.`);
@@ -648,7 +746,9 @@ async function syncAllUsers(): Promise<{ users: User[]; lastSyncAll: string }> {
   return { users, lastSyncAll };
 }
 
-// POST refresh all users
+// POST refresh all users — no longer exposed via a UI button (the board
+// now syncs itself automatically every 6 hours), but kept as a manual
+// trigger for operators.
 app.post("/api/refresh-all", refreshLimiter, async (req, res) => {
   try {
     const result = await syncAllUsers();
@@ -725,11 +825,13 @@ app.get("/api/trends", async (req, res) => {
   }
 });
 
-// GET — triggered by Vercel Cron on a schedule (see vercel.json) since a
-// setInterval inside a serverless function instance doesn't reliably persist
-// between invocations. When CRON_SECRET is set, only requests carrying it
-// (as Vercel automatically does for its own cron invocations) are accepted,
-// so this can't be used by anyone to force-trigger a sync.
+// GET — triggered every 6 hours by an external scheduler (see
+// .github/workflows/sync-cron.yml) since a setInterval inside a serverless
+// function instance doesn't reliably persist between invocations, and
+// Vercel's own Cron Jobs only support sub-daily schedules on the Pro plan
+// and above. When CRON_SECRET is set, only requests carrying it as a
+// Bearer token are accepted, so this can't be used by anyone to
+// force-trigger a sync.
 app.get("/api/cron/sync", async (req, res) => {
   if (process.env.CRON_SECRET) {
     const auth = req.headers.authorization;
@@ -769,9 +871,10 @@ async function startServer() {
     });
   }
 
-  // Periodic background sync — only for traditional/persistent hosts. On
-  // Vercel, VERCEL is set and this whole function isn't called at all;
-  // /api/cron/sync + Vercel Cron (see vercel.json) does this job instead.
+  // Periodic background sync, every 6 hours — only for traditional/
+  // persistent hosts. On Vercel, VERCEL is set and this whole function
+  // isn't called at all; /api/cron/sync + Vercel Cron (see vercel.json)
+  // does this job instead.
   setInterval(() => {
     syncAllUsers()
       .then(({ users }) => {
@@ -780,7 +883,7 @@ async function startServer() {
       .catch((e) => {
         console.warn(`[Background Sync] Failed: ${e.message}`);
       });
-  }, 1000 * 60 * 30);
+  }, 1000 * 60 * 60 * 6);
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);

@@ -103,6 +103,18 @@ export async function findDuplicate(leetcodeUsername: string, intraId: string): 
   return res.rows.length > 0;
 }
 
+// Checks whether a LeetCode username is already claimed by a different
+// cadet — used when someone edits their own username, so their own
+// existing row (which currently holds that same id) doesn't collide with
+// itself.
+export async function isLeetcodeUsernameTaken(leetcodeUsername: string, excludeId: string): Promise<boolean> {
+  const res = await client.execute({
+    sql: "SELECT id FROM users WHERE lower(leetcode_username) = lower(?) AND id != ?",
+    args: [leetcodeUsername, excludeId]
+  });
+  return res.rows.length > 0;
+}
+
 export async function insertUser(user: User): Promise<void> {
   await client.execute({
     sql: `INSERT INTO users
@@ -148,6 +160,16 @@ export async function updateUser(user: User): Promise<void> {
       JSON.stringify(user.history),
       user.id
     ]
+  });
+}
+
+// Renames the LeetCode handle linked to a cadet's row. Kept separate from
+// updateUser() (which deliberately never touches leetcode_username) so
+// every other call site can't accidentally rename a cadet as a side effect.
+export async function updateLeetcodeUsername(id: string, leetcodeUsername: string): Promise<void> {
+  await client.execute({
+    sql: "UPDATE users SET leetcode_username = ? WHERE id = ?",
+    args: [leetcodeUsername, id]
   });
 }
 

@@ -1,0 +1,27 @@
+name: Sync Leaderboard
+
+# Runs every 6 hours and hits the app's own /api/cron/sync route — this
+# replaces Vercel's built-in Cron Jobs, which on the Hobby plan only allow
+# once-per-day schedules (anything more frequent fails at deploy time).
+# The route is still gated by CRON_SECRET, so only this workflow (or
+# anyone else who has the secret) can trigger a sync.
+on:
+  schedule:
+    - cron: "0 */6 * * *" # 00:00, 06:00, 12:00, 18:00 UTC
+  workflow_dispatch: {} # lets you trigger a sync manually from the Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /api/cron/sync
+        run: |
+          status=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.SYNC_URL }}/api/cron/sync")
+          echo "HTTP status: $status"
+          cat /tmp/response.txt
+          if [ "$status" -ge 300 ]; then
+            echo "Sync request failed."
+            exit 1
+          fi
