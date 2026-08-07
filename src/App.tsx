@@ -292,7 +292,7 @@ export default function App() {
         <header className="flex flex-col lg:flex-row justify-between items-start lg:items-end mb-10 border-b border-zinc-800 pb-6 gap-6">
           <div>
             <h1 className="text-6xl md:text-8xl font-black tracking-tighter leading-none italic uppercase text-white">
-              Leader<span className="text-teal-500">42</span>
+              Leader<span className="text-teal-500">1337</span>
             </h1>
             <p className="mt-2 text-zinc-500 font-mono text-xs md:text-sm tracking-widest uppercase">
               Weekly LeetCode Sprint
@@ -629,12 +629,6 @@ export default function App() {
                 </AnimatePresence>
               </div>
 
-              {/* Info footer */}
-              <div className="flex items-center justify-between text-[10px] text-zinc-600 font-mono uppercase tracking-widest pt-4 border-t border-zinc-900 mt-4">
-                <span>Total Roster Size // {users.length} enrolled cadets</span>
-                <span>Sorted by Weekly Momentum to prioritize active coding sprints</span>
-              </div>
-
             </section>
 
           </div>
@@ -864,7 +858,7 @@ export default function App() {
 
         {/* Footer Section */}
         <footer className="mt-16 border-t border-zinc-800 pt-8 flex flex-col md:flex-row justify-between items-center text-zinc-500 font-mono text-[10px] uppercase tracking-widest gap-4">
-          <div>Internal Use Only • 42 School Management System</div>
+          <div>Internal Use Only • 1337 School Management System</div>
           <div className="flex space-x-6">
             <span className="text-zinc-400">Documentation</span>
             <span className="text-zinc-400">API Status</span>
