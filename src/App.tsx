@@ -47,7 +47,6 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"weekly" | "allTime">("allTime");
   const [loading, setLoading] = useState(true);
-  const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [pinnedUsers, setPinnedUsers] = useState<string[]>([]);
 
   // Enroll (finish-signup) form state — the 42 identity itself comes from
@@ -189,23 +188,6 @@ export default function App() {
     }
   };
 
-  // Handle individual refresh / scrape execution
-  const handleRefreshUser = async (id: string) => {
-    setRefreshingId(id);
-    try {
-      const res = await fetch(`/api/users/${id}/refresh`, { method: "POST" });
-      const result = await res.json().catch(() => null);
-      if (!res.ok) {
-        throw new Error(result?.error || "Failed to refresh stats.");
-      }
-      await loadData();
-    } catch (err: any) {
-      alert(err.message || "Couldn't refresh this cadet's stats. Their numbers are unchanged — try again shortly.");
-    } finally {
-      setRefreshingId(null);
-    }
-  };
-
   // Handle remove user
   const handleRemoveUser = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to remove Cadet ${name} from the board?`)) {
@@ -310,7 +292,7 @@ export default function App() {
         <header className="flex flex-col lg:flex-row justify-between items-start lg:items-end mb-10 border-b border-zinc-800 pb-6 gap-6">
           <div>
             <h1 className="text-6xl md:text-8xl font-black tracking-tighter leading-none italic uppercase text-white">
-              Leader<span className="text-teal-500">1337</span>
+              Leader<span className="text-teal-500">42</span>
             </h1>
             <p className="mt-2 text-zinc-500 font-mono text-xs md:text-sm tracking-widest uppercase">
               Weekly LeetCode Sprint
@@ -625,16 +607,6 @@ export default function App() {
                                 title={isPinned ? "Unpin Cadet" : "Pin Cadet to Compare"}
                               >
                                 <Pin className="w-3 h-3 fill-current" />
-                              </button>
-                              
-                              {/* Refresh individual stats trigger */}
-                              <button
-                                onClick={() => handleRefreshUser(user.id)}
-                                disabled={refreshingId !== null}
-                                className="p-1 rounded-sm hover:bg-zinc-850 text-zinc-600 hover:text-teal-400 transition-colors disabled:opacity-50"
-                                title="Run Scraper"
-                              >
-                                <RefreshCw className={`w-3 h-3 ${refreshingId === user.id ? "animate-spin text-teal-400" : ""}`} />
                               </button>
 
                               {/* Remove button — only the account owner can delete their own row */}
