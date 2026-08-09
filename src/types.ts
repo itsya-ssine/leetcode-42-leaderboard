@@ -23,6 +23,11 @@ export interface User {
   lastUpdated: string;
   history: HistoryRecord[];
   isPinned?: boolean;
+  // Present only on the currently-authenticated user's own record (see
+  // /api/auth/session and /api/enroll) — never trust a client-supplied
+  // value for this, it's always derived server-side from ADMIN_* lists in
+  // auth.ts.
+  isAdmin?: boolean;
 }
 
 export interface LeaderboardStats {

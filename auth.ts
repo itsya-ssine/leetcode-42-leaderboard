@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import type { Request, Response, NextFunction } from "express";
+import { getUserById } from "./db.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -36,6 +37,19 @@ export interface PendingSession {
 }
 
 export type SessionPayload = FullSession | PendingSession;
+
+// Admins are hardcoded by LeetCode username or by 42 (Intra) login —
+// whichever one matches grants admin rights. Keep these lowercase; the
+// check below lowercases both sides before comparing.
+const ADMIN_LEETCODE_USERNAMES = ["0x_naoki"];
+const ADMIN_INTRA_IDS = ["yelmajdo"];
+
+export function isAdminUser(user: { leetcodeUsername: string; intraId: string }): boolean {
+  return (
+    ADMIN_LEETCODE_USERNAMES.includes(user.leetcodeUsername.toLowerCase()) ||
+    ADMIN_INTRA_IDS.includes(user.intraId.toLowerCase())
+  );
+}
 
 // Older tokens (issued before the 42/pending split existed) only ever
 // carried {id, leetcodeUsername} with no "kind" field. Treat those as
@@ -86,6 +100,24 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const session = readSession(req);
   if (!session || session.kind !== "full") {
     return res.status(401).json({ error: "You must be logged in to do that." });
+  }
+  (req as any).user = session;
+  next();
+}
+
+// Express middleware: like requireAuth, but additionally rejects the
+// request (403) unless the signed-in cadet is an admin (see isAdminUser
+// above). Looks the full user record up by id so it can check both the
+// LeetCode username and the 42 login, since the session JWT itself only
+// carries the LeetCode username.
+export async function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  const session = readSession(req);
+  if (!session || session.kind !== "full") {
+    return res.status(401).json({ error: "You must be logged in to do that." });
+  }
+  const user = await getUserById(session.id);
+  if (!user || !isAdminUser(user)) {
+    return res.status(403).json({ error: "Admin access required." });
   }
   (req as any).user = session;
   next();

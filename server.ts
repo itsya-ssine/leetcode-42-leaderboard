@@ -21,7 +21,9 @@ import {
   clearSessionCookie,
   readSession,
   requireAuth,
+  requireAdmin,
   requirePendingAuth,
+  isAdminUser,
   PendingSession
 } from "./auth.js";
 import { buildAuthorizeUrl, exchangeCodeForToken, fetchIntraProfile, IntraAuthError } from "./intra.js";
@@ -438,7 +440,7 @@ app.post("/api/enroll", enrollLimiter, requirePendingAuth, async (req, res) => {
     // Promote the pending session to a full one now that enrollment is done.
     setSessionCookie(res, { kind: "full", id: newUser.id, leetcodeUsername: newUser.leetcodeUsername });
 
-    res.status(201).json(newUser);
+    res.status(201).json({ ...newUser, isAdmin: isAdminUser(newUser) });
   } catch (error: any) {
     if (error instanceof LeetCodeUserNotFoundError) {
       return res.status(404).json({ error: error.message });
@@ -482,24 +484,24 @@ app.get("/api/auth/session", async (req, res) => {
     clearSessionCookie(res);
     return res.json({ status: "guest" });
   }
-  res.json({ status: "authenticated", user });
+  res.json({ status: "authenticated", user: { ...user, isAdmin: isAdminUser(user) } });
 });
 
-// DELETE user — only the account owner can remove themselves
-app.delete("/api/users/:id", requireAuth, async (req, res) => {
+// DELETE user — admin only
+app.delete("/api/users/:id", requireAdmin, async (req, res) => {
   const { id } = req.params;
   const session = (req as any).user;
-
-  if (session.id !== id) {
-    return res.status(403).json({ error: "You can only remove your own account." });
-  }
 
   try {
     const deleted = await deleteUserById(id);
     if (!deleted) {
       return res.status(404).json({ error: "User not found." });
     }
-    clearSessionCookie(res);
+    // Only clear the session cookie if the admin removed their own
+    // account — removing someone else shouldn't log the admin out.
+    if (session.id === id) {
+      clearSessionCookie(res);
+    }
     res.json({ success: true, message: "Cadet removed successfully." });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -648,8 +650,8 @@ async function syncAllUsers(): Promise<{ users: User[]; lastSyncAll: string }> {
   return { users, lastSyncAll };
 }
 
-// POST refresh all users
-app.post("/api/refresh-all", refreshLimiter, async (req, res) => {
+// POST refresh all users — admin only
+app.post("/api/refresh-all", refreshLimiter, requireAdmin, async (req, res) => {
   try {
     const result = await syncAllUsers();
     res.json({ success: true, ...result });

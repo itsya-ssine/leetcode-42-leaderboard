@@ -47,7 +47,6 @@ export default function App() {
   const [sortBy, setSortBy] = useState<"weekly" | "allTime">("allTime");
   const [loading, setLoading] = useState(true);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
-  const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [pinnedUsers, setPinnedUsers] = useState<string[]>([]);
 
   // Enroll (finish-signup) form state — the 42 identity itself comes from
@@ -154,24 +153,8 @@ export default function App() {
     }
   };
 
-  // Handle individual refresh / scrape execution
-  const handleRefreshUser = async (id: string) => {
-    setRefreshingId(id);
-    try {
-      const res = await fetch(`/api/users/${id}/refresh`, { method: "POST" });
-      const result = await res.json().catch(() => null);
-      if (!res.ok) {
-        throw new Error(result?.error || "Failed to refresh stats.");
-      }
-      await loadData();
-    } catch (err: any) {
-      alert(err.message || "Couldn't refresh this cadet's stats. Their numbers are unchanged — try again shortly.");
-    } finally {
-      setRefreshingId(null);
-    }
-  };
-
-  // Handle batch refresh / sync
+  // Handle batch refresh / sync — admin only (button is hidden for
+  // everyone else, and the server enforces this too).
   const handleSyncAll = async () => {
     setIsSyncingAll(true);
     try {
@@ -312,16 +295,18 @@ export default function App() {
               </div>
             </div>
 
-            {/* Force Sync All Trigger button with bold accent styling */}
-            <button
-              onClick={handleSyncAll}
-              disabled={isSyncingAll || loading}
-              className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-850 text-zinc-300 hover:text-white px-5 py-3 border border-zinc-800 hover:border-zinc-700 transition duration-200 text-xs font-mono font-bold uppercase tracking-widest disabled:opacity-50 cursor-pointer rounded-sm"
-              id="sync-all-btn"
-            >
-              <RefreshCw className={`w-4 h-4 text-teal-400 ${isSyncingAll ? "animate-spin" : ""}`} />
-              {isSyncingAll ? "Syncing..." : "Force Sync All"}
-            </button>
+            {/* Force Sync All Trigger button with bold accent styling — admin only */}
+            {currentUser?.isAdmin && (
+              <button
+                onClick={handleSyncAll}
+                disabled={isSyncingAll || loading}
+                className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-850 text-zinc-300 hover:text-white px-5 py-3 border border-zinc-800 hover:border-zinc-700 transition duration-200 text-xs font-mono font-bold uppercase tracking-widest disabled:opacity-50 cursor-pointer rounded-sm"
+                id="sync-all-btn"
+              >
+                <RefreshCw className={`w-4 h-4 text-teal-400 ${isSyncingAll ? "animate-spin" : ""}`} />
+                {isSyncingAll ? "Syncing..." : "Force Sync All"}
+              </button>
+            )}
 
             {/* Auth control */}
             {authStatus === "authenticated" && currentUser ? (
@@ -606,18 +591,8 @@ export default function App() {
                                 <Pin className="w-3 h-3 fill-current" />
                               </button>
                               
-                              {/* Refresh individual stats trigger */}
-                              <button
-                                onClick={() => handleRefreshUser(user.id)}
-                                disabled={refreshingId !== null}
-                                className="p-1 rounded-sm hover:bg-zinc-850 text-zinc-600 hover:text-teal-400 transition-colors disabled:opacity-50"
-                                title="Run Scraper"
-                              >
-                                <RefreshCw className={`w-3 h-3 ${refreshingId === user.id ? "animate-spin text-teal-400" : ""}`} />
-                              </button>
-
-                              {/* Remove button — only the account owner can delete their own row */}
-                              {currentUser?.id === user.id && (
+                              {/* Remove button — admin only, can remove any cadet */}
+                              {currentUser?.isAdmin && (
                                 <button
                                   onClick={() => handleRemoveUser(user.id, user.displayName)}
                                   className="p-1 rounded-sm hover:bg-red-950/30 text-zinc-600 hover:text-red-400 transition-colors"
@@ -794,3 +769,4 @@ export default function App() {
     </div>
   );
 }
+```
