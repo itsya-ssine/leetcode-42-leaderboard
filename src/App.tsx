@@ -38,6 +38,45 @@ import { User, HistoryRecord } from "./types.js";
 import { useAuth } from "./AuthContext.js";
 import LoginModal from "./LoginModal.js";
 
+// Segmented Easy/Medium/Hard solve-count bar — green/amber/red proportional
+// segments with the raw counts printed underneath in matching colors. Used
+// both in the leaderboard row (compact) and the profile modal (roomier).
+function DifficultyBar({
+  easy,
+  medium,
+  hard,
+  size = "sm"
+}: {
+  easy: number;
+  medium: number;
+  hard: number;
+  size?: "sm" | "lg";
+}) {
+  const total = Math.max(1, easy + medium + hard);
+  const easyPct = (easy / total) * 100;
+  const mediumPct = (medium / total) * 100;
+  const hardPct = (hard / total) * 100;
+  const barHeight = size === "lg" ? "h-3" : "h-2";
+  const textSize = size === "lg" ? "text-sm" : "text-[10px]";
+
+  return (
+    <div className="w-full flex flex-col gap-1.5">
+      <div className={`w-full ${barHeight} rounded-full overflow-hidden flex bg-zinc-850`}>
+        {easy > 0 && <div className="h-full bg-emerald-500" style={{ width: `${easyPct}%` }} title={`${easy} Easy`} />}
+        {medium > 0 && <div className="h-full bg-amber-500" style={{ width: `${mediumPct}%` }} title={`${medium} Medium`} />}
+        {hard > 0 && <div className="h-full bg-red-500" style={{ width: `${hardPct}%` }} title={`${hard} Hard`} />}
+      </div>
+      <div className={`flex items-center gap-1.5 ${textSize} font-mono font-bold`}>
+        <span className="text-emerald-400">{easy}</span>
+        <span className="text-zinc-700">/</span>
+        <span className="text-amber-400">{medium}</span>
+        <span className="text-zinc-700">/</span>
+        <span className="text-red-400">{hard}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const { status: authStatus, user: currentUser, pendingIntra, logout, completeEnrollment } = useAuth();
   const [isLoginOpen, setIsLoginOpen] = useState(false);
@@ -48,6 +87,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [pinnedUsers, setPinnedUsers] = useState<string[]>([]);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
 
   // Enroll (finish-signup) form state — the 42 identity itself comes from
   // pendingIntra above, verified server-side; the cadet only ever types
@@ -462,8 +502,9 @@ export default function App() {
               <div className="grid grid-cols-12 px-4 text-[10px] uppercase font-bold tracking-widest text-zinc-500">
                 <div className="col-span-1">Rank</div>
                 <div className="col-span-4">Cadet</div>
-                <div className="col-span-2">Profiles</div>
-                <div className="col-span-3">Weekly Progress</div>
+                <div className="col-span-5">
+                  {sortBy === "weekly" ? "Weekly Progress" : "Problems Solved — Easy / Medium / Hard"}
+                </div>
                 <div className="col-span-2 text-right">Total</div>
               </div>
 
@@ -515,64 +556,51 @@ export default function App() {
                             {formattedRank}
                           </div>
 
-                          {/* Cadet Profile */}
-                          <div className="col-span-4 flex items-center gap-3">
+                          {/* Cadet Profile — click to open the full profile card */}
+                          <div
+                            className="col-span-4 flex items-center gap-3 cursor-pointer group/cadet"
+                            onClick={() => setSelectedUser(user)}
+                            title="View full profile"
+                          >
                             <img 
                               src={user.avatarUrl} 
                               alt={user.displayName}
-                              className="w-10 h-10 rounded-full object-cover border border-zinc-800"
+                              className="w-10 h-10 rounded-full object-cover border border-zinc-800 group-hover/cadet:border-teal-500/60 transition-colors"
                               referrerPolicy="no-referrer"
                             />
                             <div className="truncate pr-2">
                               <div className="flex items-center gap-1.5">
-                                <span className="font-black text-white text-base tracking-tight truncate hover:text-teal-400 transition-colors">
+                                <span className="font-black text-white text-base tracking-tight truncate group-hover/cadet:text-teal-400 transition-colors">
                                   {user.displayName}
                                 </span>
                                 {user.weeklyProgress >= 12 && (
                                   <Flame className="w-3.5 h-3.5 text-yellow-500 fill-yellow-500/10 shrink-0" title="Hot Solve Streak!" />
                                 )}
                               </div>
-                              <span className="text-[10px] text-zinc-500 italic block font-mono">
-                                Cadet // {user.intraId}
+                              <span className="text-[10px] text-zinc-600 italic block font-mono group-hover/cadet:text-teal-500/70 transition-colors">
+                                View Profile
                               </span>
                             </div>
                           </div>
 
-                          {/* Profile links */}
-                          <div className="col-span-2 flex items-center gap-1.5">
-                            <a 
-                              href={`https://profile.intra.42.fr/users/${user.intraId}`}
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="px-2 py-1 bg-zinc-850 hover:bg-zinc-800 text-[8px] font-bold rounded-sm uppercase tracking-tighter text-zinc-300 flex items-center gap-0.5"
-                              title="Intra Profile Link"
-                            >
-                              <span>Intra</span>
-                              <ArrowUpRight className="w-2.5 h-2.5" />
-                            </a>
-                            <a 
-                              href={`https://leetcode.com/${user.leetcodeUsername}`}
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="px-2 py-1 bg-zinc-850 hover:bg-zinc-800 text-[8px] font-bold rounded-sm uppercase tracking-tighter text-yellow-500 flex items-center gap-0.5"
-                              title="LeetCode Profile Link"
-                            >
-                              <span>Leet</span>
-                              <ArrowUpRight className="w-2.5 h-2.5" />
-                            </a>
-                          </div>
-
-                          {/* Weekly Progress Bar */}
-                          <div className="col-span-3 flex items-center gap-3">
-                            <div className="w-full bg-zinc-850 h-2 rounded-full overflow-hidden">
-                              <div 
-                                className="bg-teal-500 h-full transition-all duration-300" 
-                                style={{ width: `${progressPercentage}%` }}
-                              />
-                            </div>
-                            <span className="text-xs font-mono font-bold text-zinc-300 shrink-0">
-                              +{user.weeklyProgress}
-                            </span>
+                          {/* Progress column — weekly bar when sorted by Weekly Growth,
+                              Easy/Medium/Hard breakdown bar when sorted by All-Time Master */}
+                          <div className="col-span-5 flex items-center pr-6">
+                            {sortBy === "weekly" ? (
+                              <div className="w-full flex items-center gap-3">
+                                <div className="w-full bg-zinc-850 h-2 rounded-full overflow-hidden">
+                                  <div 
+                                    className="bg-teal-500 h-full transition-all duration-300" 
+                                    style={{ width: `${progressPercentage}%` }}
+                                  />
+                                </div>
+                                <span className="text-xs font-mono font-bold text-zinc-300 shrink-0">
+                                  +{user.weeklyProgress}
+                                </span>
+                              </div>
+                            ) : (
+                              <DifficultyBar easy={user.easySolved} medium={user.mediumSolved} hard={user.hardSolved} size="sm" />
+                            )}
                           </div>
 
                           {/* Total Solved & Controls */}
@@ -584,7 +612,7 @@ export default function App() {
                             <div className="flex items-center gap-1">
                               {/* Pin Compare toggle */}
                               <button 
-                                onClick={() => togglePinUser(user.id)}
+                                onClick={(e) => { e.stopPropagation(); togglePinUser(user.id); }}
                                 className={`p-1 rounded-sm hover:bg-zinc-850 transition-colors ${isPinned ? "text-teal-400" : "text-zinc-600 hover:text-zinc-400"}`}
                                 title={isPinned ? "Unpin Cadet" : "Pin Cadet to Compare"}
                               >
@@ -594,7 +622,7 @@ export default function App() {
                               {/* Remove button — admin only, can remove any cadet */}
                               {currentUser?.isAdmin && (
                                 <button
-                                  onClick={() => handleRemoveUser(user.id, user.displayName)}
+                                  onClick={(e) => { e.stopPropagation(); handleRemoveUser(user.id, user.displayName); }}
                                   className="p-1 rounded-sm hover:bg-red-950/30 text-zinc-600 hover:text-red-400 transition-colors"
                                   title="Remove Cadet"
                                 >
@@ -623,6 +651,128 @@ export default function App() {
         )}
 
         <LoginModal open={isLoginOpen} onClose={() => setIsLoginOpen(false)} />
+
+        {/* Cadet Profile Modal — opens when a leaderboard row is clicked */}
+        <AnimatePresence>
+          {selectedUser && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              {/* Backdrop */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setSelectedUser(null)}
+                className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+              />
+
+              {/* Modal Box */}
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 15 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 15 }}
+                transition={{ type: "spring", duration: 0.4, bounce: 0.15 }}
+                className="bg-zinc-900 border border-zinc-800 p-6 rounded-sm w-full max-w-md relative z-10 shadow-2xl max-h-[90vh] overflow-y-auto"
+                id="profile-modal"
+              >
+                <button
+                  onClick={() => setSelectedUser(null)}
+                  className="absolute top-4 right-4 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-850 p-1.5 rounded-sm transition-colors cursor-pointer"
+                  aria-label="Close modal"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+
+                {/* Identity header */}
+                <div className="flex items-center gap-4 mb-6 pr-8">
+                  <img
+                    src={selectedUser.avatarUrl}
+                    alt={selectedUser.displayName}
+                    className="w-16 h-16 rounded-sm object-cover border-2 border-teal-500/40"
+                    referrerPolicy="no-referrer"
+                  />
+                  <div className="truncate">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-xl font-black text-white tracking-tight truncate">{selectedUser.displayName}</h3>
+                      {selectedUser.weeklyProgress >= 12 && (
+                        <Flame className="w-4 h-4 text-yellow-500 fill-yellow-500/10 shrink-0" title="Hot Solve Streak!" />
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-teal-400 text-[10px] font-mono font-bold uppercase tracking-widest mt-1">
+                      <Award className="w-3 h-3" />
+                      Rank #{String(userRanks[selectedUser.id] || selectedUser.rank).padStart(2, "0")}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Profile links */}
+                <div className="flex items-center gap-2 mb-6">
+                  <a
+                    href={`https://profile.intra.42.fr/users/${selectedUser.intraId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 text-xs font-bold rounded-sm uppercase tracking-wider text-zinc-200 transition-colors"
+                  >
+                    <span>42 // {selectedUser.intraId}</span>
+                    <ArrowUpRight className="w-3.5 h-3.5 text-teal-400" />
+                  </a>
+                  <a
+                    href={`https://leetcode.com/${selectedUser.leetcodeUsername}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 text-xs font-bold rounded-sm uppercase tracking-wider text-zinc-200 transition-colors"
+                  >
+                    <span>Leet // {selectedUser.leetcodeUsername}</span>
+                    <ArrowUpRight className="w-3.5 h-3.5 text-yellow-500" />
+                  </a>
+                </div>
+
+                {/* Stats grid */}
+                <div className="grid grid-cols-3 gap-2 mb-6">
+                  <div className="bg-zinc-950 border border-zinc-800 rounded-sm p-3 text-center">
+                    <div className="text-2xl font-black text-white font-mono">{selectedUser.allTimeSolved}</div>
+                    <div className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mt-1">All-Time</div>
+                  </div>
+                  <div className="bg-zinc-950 border border-zinc-800 rounded-sm p-3 text-center">
+                    <div className="text-2xl font-black text-teal-400 font-mono">+{selectedUser.weeklyProgress}</div>
+                    <div className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mt-1">This Week</div>
+                  </div>
+                  <div className="bg-zinc-950 border border-zinc-800 rounded-sm p-3 text-center">
+                    <div className="text-2xl font-black text-zinc-300 font-mono flex items-center justify-center gap-1">
+                      <TrendingUp className="w-4 h-4 text-zinc-500" />
+                      {selectedUser.monthlyProgress}
+                    </div>
+                    <div className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mt-1">This Month</div>
+                  </div>
+                </div>
+
+                {/* Difficulty breakdown */}
+                <div className="bg-zinc-950 border border-zinc-800 rounded-sm p-4 mb-6">
+                  <div className="flex items-center gap-2 text-[10px] text-zinc-500 uppercase font-bold tracking-widest mb-3">
+                    <Layers className="w-3.5 h-3.5 text-teal-500" />
+                    Difficulty Breakdown
+                  </div>
+                  <DifficultyBar
+                    easy={selectedUser.easySolved}
+                    medium={selectedUser.mediumSolved}
+                    hard={selectedUser.hardSolved}
+                    size="lg"
+                  />
+                </div>
+
+                {/* Extra info */}
+                <div className="flex items-center justify-between text-[10px] text-zinc-600 font-mono uppercase tracking-widest pt-4 border-t border-zinc-900">
+                  <span className="flex items-center gap-1.5">
+                    <Calendar className="w-3 h-3" />
+                    Last Synced
+                  </span>
+                  <span className="text-zinc-400">
+                    {selectedUser.lastUpdated ? new Date(selectedUser.lastUpdated).toLocaleString() : "N/A"}
+                  </span>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
 
         {/* Enroll Cadet Modal Popup */}
         <AnimatePresence>
