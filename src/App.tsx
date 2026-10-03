@@ -21,6 +21,7 @@ import { HistoryRecord, User } from "./types.js";
 import { useAuth } from "./AuthContext.js";
 import LoginModal from "./LoginModal.js";
 import Modal from "./Modal.js";
+import { computeBadges, computeStreaks } from "./achievements.js";
 
 /* ---------- Shared style tokens ---------- */
 
@@ -248,6 +249,59 @@ function ActivitySparkline({ history, days = 30 }: { history: HistoryRecord[]; d
         <span>{shortDate(points[0].date)}</span>
         <span>{shortDate(last.date)}</span>
       </div>
+    </div>
+  );
+}
+
+/* ---------- Streaks + badges (profile modal) ---------- */
+
+// Current/longest daily solve streak and milestone badges, all derived from
+// the cadet's own history snapshots and totals — nothing extra is stored.
+function StreaksAndBadges({ user }: { user: User }) {
+  const { current, longest } = computeStreaks(user.history);
+  const badges = computeBadges(user, longest);
+  const earned = badges.filter((b) => b.earned).length;
+
+  return (
+    <div>
+      <div className="mb-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-line ring-1 ring-line">
+        <div className="bg-ink-900 p-3">
+          <div className="flex items-center gap-1.5 text-xl font-semibold tabular-nums text-white">
+            <Flame className={`size-4 ${current > 0 ? "text-amber-400" : "text-mist-500"}`} />
+            {current}
+          </div>
+          <div className="mt-0.5 text-xs text-mist-500">Current streak (days)</div>
+        </div>
+        <div className="bg-ink-900 p-3">
+          <div className="text-xl font-semibold tabular-nums text-white">{longest}</div>
+          <div className="mt-0.5 text-xs text-mist-500">Longest streak (days)</div>
+        </div>
+      </div>
+
+      <div className="mb-2 flex items-baseline justify-between text-sm">
+        <span className="font-medium text-mist-400">Badges</span>
+        <span className="tabular-nums text-mist-500">
+          {earned}/{badges.length}
+        </span>
+      </div>
+      <ul className="flex flex-wrap gap-2">
+        {badges.map((b) => (
+          <li
+            key={b.id}
+            title={b.earned ? b.description : `${b.description}${b.progress ? ` (${b.progress})` : ""}`}
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${
+              b.earned
+                ? "bg-teal-400/10 text-teal-300 ring-teal-400/30"
+                : "bg-white/5 text-mist-500 ring-line"
+            }`}
+          >
+            {b.earned ? <Trophy className="size-3" /> : <Clock className="size-3" />}
+            <span>{b.label}</span>
+            {!b.earned && b.progress && <span className="tabular-nums text-mist-500">{b.progress}</span>}
+            <span className="sr-only">{b.earned ? "(earned)" : "(locked)"}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -1179,6 +1233,11 @@ export default function App() {
               {/* Recent solves */}
               <div className="mt-3 rounded-xl bg-ink-950 p-4 ring-1 ring-line">
                 <ActivitySparkline history={selectedUser.history} days={30} />
+              </div>
+
+              {/* Streaks and badges */}
+              <div className="mt-3 rounded-xl bg-ink-950 p-4 ring-1 ring-line">
+                <StreaksAndBadges user={selectedUser} />
               </div>
 
               <div className="mt-5 flex items-center justify-between gap-3 border-t border-line pt-4 text-sm text-mist-500">
