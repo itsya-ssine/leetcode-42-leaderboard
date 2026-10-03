@@ -4,6 +4,7 @@ import crypto from "crypto";
 import path from "path";
 import "dotenv/config";
 import { User, HistoryRecord } from "./src/types.js";
+import { DAY_SECONDS, type StreakInfo, parseSubmissionCalendar, streaksFromDays } from "./streaks.js";
 import {
   initDb,
   listUsers,
@@ -395,6 +396,110 @@ async function fetchContestRating(username: string): Promise<ContestRating | nul
   return typeof result === "object" ? result : null;
 }
 
+// Daily-submission streaks, straight from LeetCode's own submission calendar
+// (the same data behind the heatmap on a cadet's LeetCode profile) instead of
+// our sync snapshots, which only move when a sync happens to see a higher total.
+async function fetchCalendarYear(
+  username: string,
+  year?: number
+): Promise<{ activeYears: number[]; streak: number | null; days: number[] } | null> {
+  try {
+    const query = `
+      query userProfileCalendar($username: String!, $year: Int) {
+        matchedUser(username: $username) {
+          userCalendar(year: $year) {
+            activeYears
+            streak
+            submissionCalendar
+          }
+        }
+      }
+    `;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    const response = await fetch("https://leetcode.com/graphql", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Referer": "https://leetcode.com",
+        "Origin": "https://leetcode.com"
+      },
+      body: JSON.stringify({ query, variables: { username: username.trim(), year: year ?? null } }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.warn(`[Streak] LeetCode GraphQL returned HTTP ${response.status} for ${username}`);
+      return null;
+    }
+
+    const json: any = await response.json();
+    const cal = json?.data?.matchedUser?.userCalendar;
+    if (json?.errors || !cal) {
+      console.warn(`[Streak] LeetCode GraphQL returned an error/empty body for ${username}`);
+      return null;
+    }
+
+    const days = parseSubmissionCalendar(cal.submissionCalendar);
+    if (!days) {
+      console.warn(`[Streak] Unrecognised submissionCalendar shape for ${username}`);
+      return null;
+    }
+
+    return {
+      activeYears: Array.isArray(cal.activeYears) ? cal.activeYears.filter(Number.isInteger) : [],
+      streak: typeof cal.streak === "number" && Number.isFinite(cal.streak) ? cal.streak : null,
+      days
+    };
+  } catch (err: any) {
+    console.warn(`[Streak] LeetCode GraphQL failed for ${username}: ${err.message}`);
+    return null;
+  }
+}
+
+// Best-effort current + longest streak for a LeetCode username.
+//
+// LeetCode exposes the current streak directly but has no "longest streak"
+// field, so the longest is computed from the submission calendar. Each sync
+// reads the default window plus the previous calendar year (so a streak that
+// crosses New Year is whole); the first time for a cadet (knownLongest ===
+// null) every active year is read to backfill their full history, and after
+// that the stored longest is only ever raised, never recomputed from less data.
+//
+// Returns null when LeetCode gave no usable answer. Callers treat null as
+// "leave whatever we have stored alone", so a flaky response can never reset a
+// real streak to 0. Never throws.
+async function fetchStreaks(username: string, knownLongest: number | null): Promise<StreakInfo | null> {
+  const first = await fetchCalendarYear(username);
+  if (!first) return null;
+
+  const thisYear = new Date().getUTCFullYear();
+  const days = new Set<number>(first.days);
+
+  const extraYears =
+    knownLongest === null
+      ? first.activeYears
+      : first.activeYears.filter((y) => y === thisYear - 1);
+  for (const y of extraYears) {
+    const more = await fetchCalendarYear(username, y);
+    if (more) more.days.forEach((d) => days.add(d));
+  }
+
+  const computed = streaksFromDays(days, Math.floor(Date.now() / 1000 / DAY_SECONDS));
+  // Prefer LeetCode's own current-streak number when it provides one.
+  const current = first.streak ?? computed.current;
+  if (first.streak !== null && first.streak !== computed.current) {
+    console.warn(`[Streak] ${username}: LeetCode says ${first.streak}, calendar says ${computed.current}`);
+  }
+  const longest = Math.max(knownLongest ?? 0, computed.longest, current);
+  return { current, longest };
+}
+
 // Estimates problems solved in the trailing `days` days by diffing the
 // current total against the closest history snapshot at or before that
 // cutoff. Returns null when there isn't enough history yet to say —
@@ -528,9 +633,10 @@ app.post("/api/enroll", enrollLimiter, requirePendingAuth, async (req, res) => {
     // can't currently be verified.
     // The rating lookup runs in parallel and never throws, so it adds no
     // latency and can't make enrollment fail.
-    const [scraped, contest] = await Promise.all([
+    const [scraped, contest, streaks] = await Promise.all([
       scrapeLeetCodeProfile(cleanLeetcodeUsername),
-      fetchContestRating(cleanLeetcodeUsername)
+      fetchContestRating(cleanLeetcodeUsername),
+      fetchStreaks(cleanLeetcodeUsername, null)
     ]);
     const todayStr = new Date().toISOString().split("T")[0];
 
@@ -549,6 +655,8 @@ app.post("/api/enroll", enrollLimiter, requirePendingAuth, async (req, res) => {
       hardSolved: scraped.hardSolved,
       contestRating: contest?.rating ?? null,
       contestsAttended: contest?.attended ?? 0,
+      currentStreak: streaks?.current ?? null,
+      longestStreak: streaks?.longest ?? null,
       // No history yet, so there's no honest way to report a weekly/monthly
       // delta — start at 0 rather than guessing.
       weeklyProgress: 0,
@@ -653,10 +761,12 @@ app.post("/api/users/:id/refresh", refreshLimiter, async (req, res) => {
 
     let scraped;
     let contest: ContestRating | null = null;
+    let streaks: StreakInfo | null = null;
     try {
-      [scraped, contest] = await Promise.all([
+      [scraped, contest, streaks] = await Promise.all([
         scrapeLeetCodeProfile(user.leetcodeUsername),
-        fetchContestRating(user.leetcodeUsername)
+        fetchContestRating(user.leetcodeUsername),
+        fetchStreaks(user.leetcodeUsername, user.longestStreak)
       ]);
     } catch (err: any) {
       // Keep the user's existing stats untouched — don't fabricate anything.
@@ -673,6 +783,10 @@ app.post("/api/users/:id/refresh", refreshLimiter, async (req, res) => {
     if (contest) {
       user.contestRating = contest.rating;
       user.contestsAttended = contest.attended;
+    }
+    if (streaks) {
+      user.currentStreak = streaks.current;
+      user.longestStreak = streaks.longest;
     }
     if (scraped.avatarUrl) {
       user.avatarUrl = scraped.avatarUrl;
@@ -733,9 +847,10 @@ async function syncAllUsers(): Promise<{ users: User[]; lastSyncAll: string }> {
 
   for (const user of users) {
     try {
-      const [scraped, contest] = await Promise.all([
+      const [scraped, contest, streaks] = await Promise.all([
         scrapeLeetCodeProfile(user.leetcodeUsername),
-        fetchContestRating(user.leetcodeUsername)
+        fetchContestRating(user.leetcodeUsername),
+        fetchStreaks(user.leetcodeUsername, user.longestStreak)
       ]);
 
       user.allTimeSolved = scraped.allTimeSolved;
@@ -745,6 +860,10 @@ async function syncAllUsers(): Promise<{ users: User[]; lastSyncAll: string }> {
       if (contest) {
         user.contestRating = contest.rating;
         user.contestsAttended = contest.attended;
+      }
+      if (streaks) {
+        user.currentStreak = streaks.current;
+        user.longestStreak = streaks.longest;
       }
       if (scraped.avatarUrl) {
         user.avatarUrl = scraped.avatarUrl;

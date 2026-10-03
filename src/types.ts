@@ -24,6 +24,10 @@ export interface User {
   // contest, or we haven't managed to fetch one yet.
   contestRating: number | null;
   contestsAttended: number;
+  // Daily-submission streaks as reported by LeetCode itself (days with at
+  // least one submission, UTC). null = not fetched yet — distinct from 0.
+  currentStreak: number | null;
+  longestStreak: number | null;
   lastUpdated: string;
   history: HistoryRecord[];
   isPinned?: boolean;

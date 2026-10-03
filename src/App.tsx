@@ -21,7 +21,7 @@ import { HistoryRecord, User } from "./types.js";
 import { useAuth } from "./AuthContext.js";
 import LoginModal from "./LoginModal.js";
 import Modal from "./Modal.js";
-import { computeBadges, computeStreaks } from "./achievements.js";
+import { computeBadges } from "./achievements.js";
 
 /* ---------- Shared style tokens ---------- */
 
@@ -255,11 +255,13 @@ function ActivitySparkline({ history, days = 30 }: { history: HistoryRecord[]; d
 
 /* ---------- Streaks + badges (profile modal) ---------- */
 
-// Current/longest daily solve streak and milestone badges, all derived from
-// the cadet's own history snapshots and totals — nothing extra is stored.
+// Daily-submission streaks (LeetCode's own numbers, stored by the server at
+// sync time) and milestone badges. A null streak means it hasn't been fetched
+// yet, which is shown as a dash rather than a misleading 0.
 function StreaksAndBadges({ user }: { user: User }) {
-  const { current, longest } = computeStreaks(user.history);
-  const badges = computeBadges(user, longest);
+  const current = user.currentStreak;
+  const longest = user.longestStreak;
+  const badges = computeBadges(user);
   const earned = badges.filter((b) => b.earned).length;
 
   return (
@@ -267,13 +269,13 @@ function StreaksAndBadges({ user }: { user: User }) {
       <div className="mb-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-line ring-1 ring-line">
         <div className="bg-ink-900 p-3">
           <div className="flex items-center gap-1.5 text-xl font-semibold tabular-nums text-white">
-            <Flame className={`size-4 ${current > 0 ? "text-amber-400" : "text-mist-500"}`} />
-            {current}
+            <Flame className={`size-4 ${(current ?? 0) > 0 ? "text-amber-400" : "text-mist-500"}`} />
+            {current ?? "–"}
           </div>
           <div className="mt-0.5 text-xs text-mist-500">Current streak (days)</div>
         </div>
         <div className="bg-ink-900 p-3">
-          <div className="text-xl font-semibold tabular-nums text-white">{longest}</div>
+          <div className="text-xl font-semibold tabular-nums text-white">{longest ?? "–"}</div>
           <div className="mt-0.5 text-xs text-mist-500">Longest streak (days)</div>
         </div>
       </div>
