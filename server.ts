@@ -276,16 +276,19 @@ interface ContestRating {
   attended: number;
 }
 
-// Best-effort fetch of a user's contest rating from LeetCode's GraphQL API.
-//
-// Returns null whenever there is no rating to report: the user has never
-// entered a contest (LeetCode answers userContestRanking: null), OR the
-// request failed. Callers treat null as "leave whatever we have stored
-// alone", so a flaky response can never wipe out a real rating. This never
-// throws and is independent of scrapeLeetCodeProfile, whose fallback sources
-// don't expose ratings, so it also works when the solved-count came from a
-// proxy API.
-async function fetchContestRating(username: string): Promise<ContestRating | null> {
+// Outcome of one attempt to look up a contest rating:
+//  - ContestRating: the user is rated
+//  - "unrated":     the source answered and says the user never entered a contest
+//  - "failed":      no usable answer (blocked, timeout, HTTP error, odd response)
+type ContestLookup = ContestRating | "unrated" | "failed";
+
+function toContestRating(ranking: any): ContestRating | null {
+  if (!ranking || typeof ranking.rating !== "number" || !Number.isFinite(ranking.rating)) return null;
+  return { rating: Math.round(ranking.rating), attended: Number(ranking.attendedContestsCount) || 0 };
+}
+
+// Source 1: LeetCode's own GraphQL endpoint.
+async function fetchContestFromGraphQL(username: string): Promise<ContestLookup> {
   try {
     const query = `
       query userContestRankingInfo($username: String!) {
@@ -312,21 +315,84 @@ async function fetchContestRating(username: string): Promise<ContestRating | nul
     });
 
     clearTimeout(timeoutId);
-    if (!response.ok) return null;
+
+    if (!response.ok) {
+      console.warn(`[Contest] LeetCode GraphQL returned HTTP ${response.status} for ${username}`);
+      return "failed";
+    }
 
     const json: any = await response.json();
-    const ranking = json?.data?.userContestRanking;
-    if (!ranking || typeof ranking.rating !== "number" || !Number.isFinite(ranking.rating)) {
-      return null;
+    if (json?.errors || !json?.data) {
+      console.warn(`[Contest] LeetCode GraphQL returned an error/empty body for ${username}`);
+      return "failed";
     }
-    return {
-      rating: Math.round(ranking.rating),
-      attended: Number(ranking.attendedContestsCount) || 0
-    };
+
+    const ranking = json.data.userContestRanking;
+    if (ranking === null) return "unrated"; // a definitive answer: never entered a contest
+    const rated = toContestRating(ranking);
+    if (rated) return rated;
+
+    console.warn(`[Contest] LeetCode GraphQL returned an unrecognised shape for ${username}`);
+    return "failed";
   } catch (err: any) {
-    console.warn(`[Fetch] Contest rating for ${username} failed: ${err.message}`);
-    return null;
+    console.warn(`[Contest] LeetCode GraphQL failed for ${username}: ${err.message}`);
+    return "failed";
   }
+}
+
+// Source 2: the public Alfa wrapper. Only consulted when LeetCode itself
+// gave no usable answer (e.g. it blocks this server's IP, which is why the
+// solved-count scraper has fallbacks too). Accepts the response either
+// wrapped in { data } or bare, since wrapper versions differ.
+async function fetchContestFromAlfa(username: string): Promise<ContestLookup> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    const response = await fetch(
+      `https://alfa-leetcode-api.onrender.com/userContestRankingInfo/${encodeURIComponent(username.trim())}`,
+      { signal: controller.signal }
+    );
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.warn(`[Contest] Alfa API returned HTTP ${response.status} for ${username}`);
+      return "failed";
+    }
+
+    const json: any = await response.json();
+    if (json?.errors) {
+      console.warn(`[Contest] Alfa API returned an error body for ${username}`);
+      return "failed";
+    }
+
+    const ranking = (json?.data ?? json)?.userContestRanking;
+    if (ranking === null) return "unrated";
+    const rated = toContestRating(ranking);
+    if (rated) return rated;
+
+    console.warn(`[Contest] Alfa API returned an unrecognised shape for ${username}`);
+    return "failed";
+  } catch (err: any) {
+    console.warn(`[Contest] Alfa API failed for ${username}: ${err.message}`);
+    return "failed";
+  }
+}
+
+// Best-effort contest rating for a LeetCode username.
+//
+// Returns null whenever there is no rating to report: the user has never
+// entered a contest, OR no source could answer. Callers treat null as
+// "leave whatever we have stored alone", so a flaky response can never wipe
+// out a real rating. Never throws, and is independent of
+// scrapeLeetCodeProfile (whose fallback sources don't expose ratings).
+async function fetchContestRating(username: string): Promise<ContestRating | null> {
+  let result = await fetchContestFromGraphQL(username);
+  if (result === "failed") {
+    result = await fetchContestFromAlfa(username);
+  }
+  return typeof result === "object" ? result : null;
 }
 
 // Estimates problems solved in the trailing `days` days by diffing the
