@@ -12,10 +12,12 @@ import {
   X,
   LogIn,
   LogOut,
-  Trophy
+  Trophy,
+  Clock
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { User } from "./types.js";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { HistoryRecord, User } from "./types.js";
 import { useAuth } from "./AuthContext.js";
 import LoginModal from "./LoginModal.js";
 import Modal from "./Modal.js";
@@ -42,6 +44,63 @@ const rankColor = (rank: number) =>
         : "text-mist-500";
 
 const HOT_STREAK_THRESHOLD = 12;
+
+// Polling cadence while the tab is visible. Hidden tabs don't poll at all.
+const POLL_INTERVAL_MS = 15_000;
+
+// A cadet whose last successful LeetCode fetch is older than this gets a
+// "stale" badge. The server syncs every 30 minutes, so a full day without an
+// update means their fetches are failing, not that nobody has synced.
+const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
+const PINNED_STORAGE_KEY = "leader1337:pinned";
+
+type SortKey = "weekly" | "allTime";
+
+/* ---------- URL + localStorage state ---------- */
+
+// ?sort=weekly&q=ali — defaults (allTime, empty search) are left out of the
+// URL to keep shared links short.
+function readUrlState(): { sort: SortKey; q: string } {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    sort: params.get("sort") === "weekly" ? "weekly" : "allTime",
+    q: params.get("q") ?? ""
+  };
+}
+
+function readPinned(): string[] {
+  try {
+    const raw = window.localStorage.getItem(PINNED_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    // Storage blocked (private mode, disabled cookies) or corrupt JSON.
+    return [];
+  }
+}
+
+/* ---------- Freshness helpers ---------- */
+
+function formatAge(iso: string, now: number): string {
+  const ms = now - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return "";
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function isStale(iso: string, now: number): boolean {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) && now - t > STALE_AFTER_MS;
+}
+
+const shortDate = (isoDate: string) =>
+  new Date(`${isoDate}T00:00:00`).toLocaleDateString([], { month: "short", day: "numeric" });
 
 /* ---------- Difficulty bar ---------- */
 
@@ -106,6 +165,166 @@ function HotStreak({ className = "size-3.5" }: { className?: string }) {
   );
 }
 
+/* ---------- Sparkline (profile modal) ---------- */
+
+// Cumulative solved count over the last `days` days, from the cadet's own
+// history snapshots (the server keeps up to 60).
+function ActivitySparkline({ history, days = 30 }: { history: HistoryRecord[]; days?: number }) {
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+  const points = [...(history || [])]
+    .filter((h) => h.date >= cutoff)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  if (points.length < 2) {
+    return (
+      <p className="text-sm text-mist-500">Not enough history yet. Check back after a couple of syncs.</p>
+    );
+  }
+
+  const W = 300;
+  const H = 64;
+  const PAD = 4;
+  const values = points.map((p) => p.solvedCount);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const x = (i: number) => PAD + (i / (points.length - 1)) * (W - PAD * 2);
+  const y = (v: number) => (max === min ? H / 2 : H - PAD - ((v - min) / (max - min)) * (H - PAD * 2));
+
+  const line = points
+    .map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)} ${y(p.solvedCount).toFixed(1)}`)
+    .join(" ");
+  const area = `${line} L${x(points.length - 1).toFixed(1)} ${H} L${x(0).toFixed(1)} ${H} Z`;
+  const gained = values[values.length - 1] - values[0];
+  const last = points[points.length - 1];
+
+  return (
+    <div>
+      <div className="mb-3 flex items-baseline justify-between text-sm">
+        <span className="font-medium text-mist-400">Last {days} days</span>
+        <span className="font-semibold tabular-nums text-teal-300">+{gained} solved</span>
+      </div>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="h-16 w-full text-teal-300"
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`Solved count rose from ${values[0]} to ${values[values.length - 1]} over the last ${days} days`}
+      >
+        <path d={area} fill="currentColor" fillOpacity={0.12} />
+        <path
+          d={line}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+        />
+        <circle cx={x(points.length - 1)} cy={y(last.solvedCount)} r={3} fill="currentColor" />
+      </svg>
+      <div className="mt-2 flex justify-between text-xs tabular-nums text-mist-500">
+        <span>{shortDate(points[0].date)}</span>
+        <span>{shortDate(last.date)}</span>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Group growth chart ---------- */
+
+interface TrendPoint {
+  date: string;
+  solved: number;
+  activeUsers: number;
+}
+
+function GroupGrowthChart({ trend }: { trend: any }) {
+  const series: TrendPoint[] = trend?.historyTrend ?? [];
+  const breakdown: { name: string; value: number }[] = trend?.difficultyBreakdown ?? [];
+  const pick = (name: string) => breakdown.find((b) => b.name === name)?.value ?? 0;
+
+  return (
+    <section
+      id="growth-panel"
+      aria-label="Group growth"
+      className="mb-8 rounded-xl bg-ink-900 p-5 ring-1 ring-line"
+    >
+      <div className="mb-4">
+        <h2 className="text-base font-semibold tracking-tight text-white">Group growth</h2>
+        <p className="mt-0.5 text-sm text-mist-500">Total problems solved by the whole roster over time</p>
+      </div>
+
+      {series.length < 2 ? (
+        <p className="py-10 text-center text-sm text-mist-500">
+          The chart appears once the board has more than one day of history.
+        </p>
+      ) : (
+        <div className="h-56 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={series} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="growthFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#2dd4bf" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#2dd4bf" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+              <XAxis
+                dataKey="date"
+                tickFormatter={shortDate}
+                tick={{ fill: "#7d8799", fontSize: 12 }}
+                tickLine={false}
+                axisLine={false}
+                minTickGap={32}
+              />
+              <YAxis
+                domain={[
+                  (min: number) => Math.max(0, Math.floor(min * 0.98)),
+                  (max: number) => Math.ceil(max * 1.02)
+                ]}
+                allowDecimals={false}
+                tickFormatter={(v: number) => v.toLocaleString()}
+                tick={{ fill: "#7d8799", fontSize: 12 }}
+                tickLine={false}
+                axisLine={false}
+                width={48}
+              />
+              <Tooltip
+                cursor={{ stroke: "rgba(255,255,255,0.18)" }}
+                contentStyle={{
+                  background: "#171c25",
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  borderRadius: 8,
+                  color: "#e8ebf1",
+                  fontSize: 13
+                }}
+                labelStyle={{ color: "#a3acbb" }}
+                labelFormatter={(label) => shortDate(String(label))}
+                formatter={(value) => [Number(value).toLocaleString(), "Solved"]}
+              />
+              <Area
+                type="monotone"
+                dataKey="solved"
+                stroke="#2dd4bf"
+                strokeWidth={2}
+                fill="url(#growthFill)"
+                isAnimationActive={false}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {breakdown.length > 0 && (
+        <div className="mt-4 border-t border-line pt-4">
+          <div className="mb-3 text-sm font-medium text-mist-400">Solved by difficulty, whole roster</div>
+          <DifficultyBar easy={pick("Easy")} medium={pick("Medium")} hard={pick("Hard")} size="lg" />
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ---------- App ---------- */
 
 export default function App() {
@@ -113,11 +332,11 @@ export default function App() {
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [lastSyncAll, setLastSyncAll] = useState<string>("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [sortBy, setSortBy] = useState<"weekly" | "allTime">("allTime");
+  const [searchQuery, setSearchQuery] = useState<string>(() => readUrlState().q);
+  const [sortBy, setSortBy] = useState<SortKey>(() => readUrlState().sort);
   const [loading, setLoading] = useState(true);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
-  const [pinnedUsers, setPinnedUsers] = useState<string[]>([]);
+  const [pinnedUsers, setPinnedUsers] = useState<string[]>(readPinned);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
 
   // Enroll (finish-signup) form state — the 42 identity itself comes from
@@ -180,14 +399,61 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadData();
     // Poll for updates so everyone sees new stats without a manual reload —
-    // the server also runs a real background sync every 30 minutes.
-    const interval = setInterval(() => {
-      loadData();
-    }, 15000); // poll every 15s so multiple viewers stay in sync
-    return () => clearInterval(interval);
+    // the server also runs a real background sync every 30 minutes. Polling
+    // only runs while the tab is visible: a hidden tab stops hitting
+    // /api/users and /api/trends, and catches up with one fetch the moment
+    // it becomes visible again.
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const startPolling = () => {
+      if (timer === undefined) timer = setInterval(loadData, POLL_INTERVAL_MS);
+    };
+    const stopPolling = () => {
+      if (timer !== undefined) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        loadData();
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+
+    loadData(); // always load once, even if the tab was opened in the background
+    if (document.visibilityState === "visible") startPolling();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      stopPolling();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
+
+  // Mirror the view into the address bar (?sort=weekly&q=ali) so it can be
+  // shared. replaceState, not pushState, so typing doesn't flood the back
+  // button. Other params and the hash are preserved.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (sortBy === "allTime") params.delete("sort");
+    else params.set("sort", sortBy);
+    if (searchQuery) params.set("q", searchQuery);
+    else params.delete("q");
+    const qs = params.toString();
+    const next = `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`;
+    window.history.replaceState(window.history.state, "", next);
+  }, [sortBy, searchQuery]);
+
+  // Pinned cadets survive a refresh.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify(pinnedUsers));
+    } catch {
+      // Storage unavailable — pins still work for this session.
+    }
+  }, [pinnedUsers]);
 
   // Handle cadet onboarding — the 42 identity is already verified (this
   // form only ever renders once authStatus === "pending"), so all we send
@@ -339,6 +605,13 @@ export default function App() {
   };
   const syncTime = formatSyncTime(lastSyncAll);
 
+  // Freshness. If the whole board hasn't synced in a day, the sync job is
+  // the problem, so we flag that once in the header instead of badging every
+  // row. Otherwise a stale row means that one cadet's LeetCode fetch is
+  // failing.
+  const now = Date.now();
+  const boardStale = isStale(lastSyncAll, now);
+
   const stats = [
     {
       label: "Cadets on the board",
@@ -437,8 +710,13 @@ export default function App() {
             </p>
           </div>
           <div className="flex items-center gap-2 text-sm text-mist-400">
-            <span className="size-2 rounded-full bg-teal-400" aria-hidden="true" />
-            {syncTime ? (
+            <span
+              className={`size-2 rounded-full ${boardStale ? "bg-amber-400" : "bg-teal-400"}`}
+              aria-hidden="true"
+            />
+            {boardStale ? (
+              <span className="text-amber-300">Last synced {formatAge(lastSyncAll, now)}</span>
+            ) : syncTime ? (
               <span>
                 Last synced at <span className="font-medium tabular-nums text-mist-100">{syncTime}</span>
               </span>
@@ -486,6 +764,9 @@ export default function App() {
             </div>
           ))}
         </section>
+
+        {/* ---------- Group growth ---------- */}
+        {!loading && <GroupGrowthChart trend={trendData} />}
 
         {/* ---------- Podium ---------- */}
         {showPodium && (
@@ -673,6 +954,15 @@ export default function App() {
                               {user.weeklyProgress >= HOT_STREAK_THRESHOLD && <HotStreak />}
                             </div>
                             <div className="truncate text-sm text-mist-500">@{user.leetcodeUsername}</div>
+                            {!boardStale && isStale(user.lastUpdated, now) && (
+                              <div
+                                className="mt-1 inline-flex items-center gap-1 rounded bg-amber-400/10 px-1.5 py-0.5 text-xs text-amber-300 ring-1 ring-amber-300/20"
+                                title={`Last successful LeetCode fetch: ${new Date(user.lastUpdated).toLocaleString()}. The board synced more recently, so LeetCode's API may be failing for this account.`}
+                              >
+                                <Clock className="size-3" aria-hidden="true" />
+                                Updated {formatAge(user.lastUpdated, now)}
+                              </div>
+                            )}
                           </div>
                         </button>
 
@@ -831,10 +1121,20 @@ export default function App() {
                 />
               </div>
 
-              <div className="mt-5 flex items-center justify-between border-t border-line pt-4 text-sm text-mist-500">
+              {/* Recent solves */}
+              <div className="mt-3 rounded-xl bg-ink-950 p-4 ring-1 ring-line">
+                <ActivitySparkline history={selectedUser.history} days={30} />
+              </div>
+
+              <div className="mt-5 flex items-center justify-between gap-3 border-t border-line pt-4 text-sm text-mist-500">
                 <span>Last synced</span>
-                <span className="text-mist-100">
+                <span
+                  className={!boardStale && isStale(selectedUser.lastUpdated, now) ? "text-amber-300" : "text-mist-100"}
+                >
                   {selectedUser.lastUpdated ? new Date(selectedUser.lastUpdated).toLocaleString() : "Never"}
+                  {selectedUser.lastUpdated && isStale(selectedUser.lastUpdated, now) && (
+                    <> ({formatAge(selectedUser.lastUpdated, now)})</>
+                  )}
                 </span>
               </div>
             </Modal>
