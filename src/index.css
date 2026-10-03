@@ -1,1 +1,58 @@
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Surfaces: a blue-tinted ink scale instead of flat zinc */
+  --color-ink-950: #0a0d12;
+  --color-ink-900: #10141b;
+  --color-ink-800: #171c25;
+  --color-ink-700: #232a36;
+
+  /* Text */
+  --color-mist-100: #e8ebf1;
+  --color-mist-400: #a3acbb;
+  --color-mist-500: #7d8799;
+
+  /* Hairlines */
+  --color-line: rgb(255 255 255 / 0.08);
+  --color-line-strong: rgb(255 255 255 / 0.18);
+}
+
+html {
+  color-scheme: dark;
+  background: var(--color-ink-950);
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  color: var(--color-mist-100);
+  background: var(--color-ink-950);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgb(45 212 191 / 0.35);
+  color: #fff;
+}
+
+/* Slim, unobtrusive scrollbars inside modals */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-ink-700) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
