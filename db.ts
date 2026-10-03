@@ -29,6 +29,8 @@ export async function initDb(): Promise<void> {
         monthly_progress INTEGER NOT NULL DEFAULT 0,
         last_updated TEXT NOT NULL,
         history TEXT NOT NULL DEFAULT '[]',
+        contest_rating INTEGER,
+        contests_attended INTEGER NOT NULL DEFAULT 0,
         password_hash TEXT NOT NULL DEFAULT ''
       )`,
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_leetcode ON users(leetcode_username)`,
@@ -50,6 +52,21 @@ export async function initDb(): Promise<void> {
   } catch {
     // Column already exists — fine, ignore.
   }
+
+  // Contest rating columns, added after the first release. Same idempotent
+  // pattern: databases created before this change get them here, fresh ones
+  // already have them from CREATE TABLE above. Existing rows start unrated
+  // (NULL) and are filled in by the next sync.
+  for (const ddl of [
+    `ALTER TABLE users ADD COLUMN contest_rating INTEGER`,
+    `ALTER TABLE users ADD COLUMN contests_attended INTEGER NOT NULL DEFAULT 0`
+  ]) {
+    try {
+      await client.execute(ddl);
+    } catch {
+      // Column already exists — fine, ignore.
+    }
+  }
 }
 
 function rowToUser(row: Record<string, unknown>): User {
@@ -68,6 +85,8 @@ function rowToUser(row: Record<string, unknown>): User {
     // Rank is derived at read time (see sortAndRankUsers in server.ts),
     // never stored — it depends on everyone else's stats, not just this row.
     rank: 0,
+    contestRating: row.contest_rating == null ? null : Number(row.contest_rating),
+    contestsAttended: Number(row.contests_attended ?? 0),
     lastUpdated: row.last_updated as string,
     history: JSON.parse((row.history as string) || "[]")
   };
@@ -108,8 +127,8 @@ export async function insertUser(user: User): Promise<void> {
     sql: `INSERT INTO users
       (id, display_name, leetcode_username, intra_id, avatar_url, all_time_solved,
        easy_solved, medium_solved, hard_solved, weekly_progress, monthly_progress,
-       last_updated, history)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       last_updated, history, contest_rating, contests_attended)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       user.id,
       user.displayName,
@@ -123,7 +142,9 @@ export async function insertUser(user: User): Promise<void> {
       user.weeklyProgress,
       user.monthlyProgress,
       user.lastUpdated,
-      JSON.stringify(user.history)
+      JSON.stringify(user.history),
+      user.contestRating,
+      user.contestsAttended
     ]
   });
 }
@@ -133,7 +154,7 @@ export async function updateUser(user: User): Promise<void> {
     sql: `UPDATE users SET
       display_name = ?, avatar_url = ?, all_time_solved = ?, easy_solved = ?,
       medium_solved = ?, hard_solved = ?, weekly_progress = ?, monthly_progress = ?,
-      last_updated = ?, history = ?
+      last_updated = ?, history = ?, contest_rating = ?, contests_attended = ?
       WHERE id = ?`,
     args: [
       user.displayName,
@@ -146,6 +167,8 @@ export async function updateUser(user: User): Promise<void> {
       user.monthlyProgress,
       user.lastUpdated,
       JSON.stringify(user.history),
+      user.contestRating,
+      user.contestsAttended,
       user.id
     ]
   });

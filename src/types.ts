@@ -20,6 +20,10 @@ export interface User {
   weeklyProgress: number; // count solved in last 7 days
   monthlyProgress: number; // count solved in last 30 days
   rank: number;
+  // LeetCode contest rating (rounded). null = unrated: never entered a
+  // contest, or we haven't managed to fetch one yet.
+  contestRating: number | null;
+  contestsAttended: number;
   lastUpdated: string;
   history: HistoryRecord[];
   isPinned?: boolean;

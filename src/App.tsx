@@ -55,7 +55,29 @@ const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 const PINNED_STORAGE_KEY = "leader1337:pinned";
 
-type SortKey = "weekly" | "allTime";
+type SortKey = "weekly" | "allTime" | "rating";
+
+// Single source of truth for ordering, used for both the absolute ranks and
+// the displayed list. Contest mode puts rated cadets first (highest rating
+// first) and unrated cadets after them, ordered by problems solved.
+function compareUsers(sortBy: SortKey) {
+  return (a: User, b: User): number => {
+    if (sortBy === "rating") {
+      const ar = a.contestRating;
+      const br = b.contestRating;
+      if (ar != null && br == null) return -1;
+      if (ar == null && br != null) return 1;
+      if (ar != null && br != null && ar !== br) return br - ar;
+      return b.allTimeSolved - a.allTimeSolved;
+    }
+    if (sortBy === "weekly") {
+      if (b.weeklyProgress !== a.weeklyProgress) return b.weeklyProgress - a.weeklyProgress;
+      return b.allTimeSolved - a.allTimeSolved;
+    }
+    if (b.allTimeSolved !== a.allTimeSolved) return b.allTimeSolved - a.allTimeSolved;
+    return b.weeklyProgress - a.weeklyProgress;
+  };
+}
 
 /* ---------- URL + localStorage state ---------- */
 
@@ -64,7 +86,7 @@ type SortKey = "weekly" | "allTime";
 function readUrlState(): { sort: SortKey; q: string } {
   const params = new URLSearchParams(window.location.search);
   return {
-    sort: params.get("sort") === "weekly" ? "weekly" : "allTime",
+    sort: ((v) => (v === "weekly" || v === "rating" ? v : "allTime"))(params.get("sort")),
     q: params.get("q") ?? ""
   };
 }
@@ -543,19 +565,7 @@ export default function App() {
   });
 
   // Calculate dynamic absolute ranks based on selected sortBy criteria (independent of pinning or search filtering)
-  const rankedUsers = [...users].sort((a, b) => {
-    if (sortBy === "weekly") {
-      if (b.weeklyProgress !== a.weeklyProgress) {
-        return b.weeklyProgress - a.weeklyProgress;
-      }
-      return b.allTimeSolved - a.allTimeSolved;
-    } else {
-      if (b.allTimeSolved !== a.allTimeSolved) {
-        return b.allTimeSolved - a.allTimeSolved;
-      }
-      return b.weeklyProgress - a.weeklyProgress;
-    }
-  });
+  const rankedUsers = [...users].sort(compareUsers(sortBy));
 
   // Map user ID to their dynamic absolute rank
   const userRanks: Record<string, number> = {};
@@ -570,18 +580,13 @@ export default function App() {
     if (aPinned && !bPinned) return -1;
     if (!aPinned && bPinned) return 1;
 
-    if (sortBy === "weekly") {
-      if (b.weeklyProgress !== a.weeklyProgress) {
-        return b.weeklyProgress - a.weeklyProgress;
-      }
-      return b.allTimeSolved - a.allTimeSolved;
-    } else {
-      if (b.allTimeSolved !== a.allTimeSolved) {
-        return b.allTimeSolved - a.allTimeSolved;
-      }
-      return b.weeklyProgress - a.weeklyProgress;
-    }
+    return compareUsers(sortBy)(a, b);
   });
+
+  // The rank to display for a cadet. In contest mode, unrated cadets have no
+  // position in that ranking, so they get a dash instead of a misleading #N.
+  const displayRank = (u: User): number | null =>
+    sortBy === "rating" && u.contestRating == null ? null : userRanks[u.id] || u.rank;
 
   // Derived stats values
   const totalSolvedAggregate = users.reduce((acc, u) => acc + u.allTimeSolved, 0);
@@ -591,7 +596,10 @@ export default function App() {
   const groupWeeklyVelocity = users.reduce((acc, u) => acc + u.weeklyProgress, 0);
 
   // The podium only shows on the unfiltered board
-  const showPodium = !loading && !searchQuery && rankedUsers.length >= 3;
+  // In contest mode the podium only features rated cadets.
+  const podiumUsers =
+    sortBy === "rating" ? rankedUsers.filter((u) => u.contestRating != null).slice(0, 3) : rankedUsers.slice(0, 3);
+  const showPodium = !loading && !searchQuery && podiumUsers.length >= 3;
 
   // Formatting Last Sync time
   const formatSyncTime = (isoString: string) => {
@@ -771,7 +779,7 @@ export default function App() {
         {/* ---------- Podium ---------- */}
         {showPodium && (
           <section aria-label="Top three cadets" className="mb-8 grid gap-3 md:grid-cols-3">
-            {rankedUsers.slice(0, 3).map((user, i) => (
+            {podiumUsers.map((user, i) => (
               <button
                 key={user.id}
                 type="button"
@@ -801,9 +809,15 @@ export default function App() {
                   <span className={sortBy === "allTime" ? "text-white" : "text-mist-400"}>
                     <span className="font-semibold tabular-nums">{user.allTimeSolved}</span> solved
                   </span>
-                  <span className={sortBy === "weekly" ? "text-teal-300" : "text-mist-400"}>
-                    <span className="font-semibold tabular-nums">+{user.weeklyProgress}</span> this week
-                  </span>
+                  {sortBy === "rating" ? (
+                    <span className="text-teal-300">
+                      <span className="font-semibold tabular-nums">{user.contestRating?.toLocaleString()}</span> rating
+                    </span>
+                  ) : (
+                    <span className={sortBy === "weekly" ? "text-teal-300" : "text-mist-400"}>
+                      <span className="font-semibold tabular-nums">+{user.weeklyProgress}</span> this week
+                    </span>
+                  )}
                 </div>
               </button>
             ))}
@@ -839,7 +853,8 @@ export default function App() {
               {(
                 [
                   { key: "weekly", label: "This week", id: "sort-weekly-btn" },
-                  { key: "allTime", label: "All time", id: "sort-alltime-btn" }
+                  { key: "allTime", label: "All time", id: "sort-alltime-btn" },
+                  { key: "rating", label: "Contest", id: "sort-rating-btn" }
                 ] as const
               ).map((opt) => (
                 <button
@@ -863,10 +878,11 @@ export default function App() {
           {/* Column labels */}
           <div className="hidden grid-cols-12 gap-x-4 border-b border-line px-5 py-2.5 text-xs font-medium text-mist-500 md:grid">
             <div className="col-span-1">Rank</div>
-            <div className="col-span-4">Cadet</div>
-            <div className="col-span-5">
+            <div className="col-span-3">Cadet</div>
+            <div className="col-span-4">
               {sortBy === "weekly" ? "Solved this week" : "Solved by difficulty"}
             </div>
+            <div className="col-span-2">Contest rating</div>
             <div className="col-span-2 text-right">Total</div>
           </div>
 
@@ -907,7 +923,7 @@ export default function App() {
                 ) : (
                   sortedUsers.map((user) => {
                     const isPinned = pinnedUsers.includes(user.id);
-                    const actualRank = userRanks[user.id] || user.rank;
+                    const actualRank = displayRank(user);
 
                     // Weekly bar is scaled against 25 problems/week
                     const progressPercentage = Math.min(100, Math.round((user.weeklyProgress / 25) * 100));
@@ -928,9 +944,9 @@ export default function App() {
                       >
                         {/* Rank */}
                         <div
-                          className={`text-lg font-semibold tabular-nums md:col-span-1 ${rankColor(actualRank)}`}
+                          className={`text-lg font-semibold tabular-nums md:col-span-1 ${rankColor(actualRank ?? 0)}`}
                         >
-                          {actualRank}
+                          {actualRank ?? "–"}
                         </div>
 
                         {/* Cadet — opens the full profile */}
@@ -938,7 +954,7 @@ export default function App() {
                           type="button"
                           onClick={() => setSelectedUser(user)}
                           title="View full profile"
-                          className={`group/cadet flex min-w-0 cursor-pointer items-center gap-3 rounded-lg text-left md:col-span-4 ${focusRing}`}
+                          className={`group/cadet flex min-w-0 cursor-pointer items-center gap-3 rounded-lg text-left md:col-span-3 ${focusRing}`}
                         >
                           <img
                             src={user.avatarUrl}
@@ -968,7 +984,7 @@ export default function App() {
 
                         {/* Progress — weekly bar when sorted by week, difficulty split otherwise.
                             Drops below the cadet on small screens. */}
-                        <div className="order-last col-span-3 md:order-none md:col-span-5 md:pr-6">
+                        <div className="order-last col-span-3 md:order-none md:col-span-4 md:pr-4">
                           {sortBy === "weekly" ? (
                             <div className="flex w-full items-center gap-3">
                               <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/5">
@@ -988,6 +1004,28 @@ export default function App() {
                               hard={user.hardSolved}
                               size="sm"
                             />
+                          )}
+                        </div>
+
+                        {/* Contest rating — number + contests entered; "Unrated" when none.
+                            Drops below the progress bar on small screens. */}
+                        <div className="order-last col-span-3 flex items-baseline gap-2 md:order-none md:col-span-2 md:block">
+                          <span className="text-xs text-mist-500 md:hidden">Contest rating</span>
+                          {user.contestRating != null ? (
+                            <>
+                              <span
+                                className={`text-base font-semibold tabular-nums ${
+                                  sortBy === "rating" ? "text-teal-300" : "text-white"
+                                }`}
+                              >
+                                {user.contestRating.toLocaleString()}
+                              </span>
+                              <span className="text-xs text-mist-500 md:block">
+                                {user.contestsAttended} {user.contestsAttended === 1 ? "contest" : "contests"}
+                              </span>
+                            </>
+                          ) : (
+                            <span className="text-sm text-mist-500">Unrated</span>
                           )}
                         </div>
 
@@ -1064,9 +1102,9 @@ export default function App() {
                     {selectedUser.weeklyProgress >= HOT_STREAK_THRESHOLD && <HotStreak className="size-4" />}
                   </div>
                   <div className="mt-0.5 text-sm text-mist-400">
-                    Rank{" "}
-                    <span className={`font-semibold tabular-nums ${rankColor(userRanks[selectedUser.id] || selectedUser.rank)}`}>
-                      #{userRanks[selectedUser.id] || selectedUser.rank}
+                    {sortBy === "rating" ? "Contest rank" : "Rank"}{" "}
+                    <span className={`font-semibold tabular-nums ${rankColor(displayRank(selectedUser) ?? 0)}`}>
+                      {displayRank(selectedUser) != null ? `#${displayRank(selectedUser)}` : "Unranked"}
                     </span>
                   </div>
                 </div>
@@ -1108,6 +1146,23 @@ export default function App() {
                   <div className="text-2xl font-semibold tabular-nums text-white">+{selectedUser.monthlyProgress}</div>
                   <div className="mt-0.5 text-xs text-mist-500">This month</div>
                 </div>
+              </div>
+
+              {/* Contest rating */}
+              <div className="mb-5 flex items-center justify-between gap-3 rounded-xl bg-ink-950 p-3.5 ring-1 ring-line">
+                <div className="text-sm text-mist-500">Contest rating</div>
+                {selectedUser.contestRating != null ? (
+                  <div className="text-right">
+                    <span className="text-2xl font-semibold tabular-nums text-white">
+                      {selectedUser.contestRating.toLocaleString()}
+                    </span>
+                    <span className="ml-2 text-xs text-mist-500">
+                      {selectedUser.contestsAttended} {selectedUser.contestsAttended === 1 ? "contest" : "contests"}
+                    </span>
+                  </div>
+                ) : (
+                  <span className="text-sm text-mist-500">Unrated</span>
+                )}
               </div>
 
               {/* Difficulty breakdown */}

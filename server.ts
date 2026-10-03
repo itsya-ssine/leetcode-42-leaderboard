@@ -270,6 +270,65 @@ async function scrapeLeetCodeProfile(username: string): Promise<{
   throw new LeetCodeUnavailableError(cleanUsername);
 }
 
+// A cadet's LeetCode contest standing.
+interface ContestRating {
+  rating: number;
+  attended: number;
+}
+
+// Best-effort fetch of a user's contest rating from LeetCode's GraphQL API.
+//
+// Returns null whenever there is no rating to report: the user has never
+// entered a contest (LeetCode answers userContestRanking: null), OR the
+// request failed. Callers treat null as "leave whatever we have stored
+// alone", so a flaky response can never wipe out a real rating. This never
+// throws and is independent of scrapeLeetCodeProfile, whose fallback sources
+// don't expose ratings, so it also works when the solved-count came from a
+// proxy API.
+async function fetchContestRating(username: string): Promise<ContestRating | null> {
+  try {
+    const query = `
+      query userContestRankingInfo($username: String!) {
+        userContestRanking(username: $username) {
+          attendedContestsCount
+          rating
+        }
+      }
+    `;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    const response = await fetch("https://leetcode.com/graphql", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Referer": "https://leetcode.com",
+        "Origin": "https://leetcode.com"
+      },
+      body: JSON.stringify({ query, variables: { username: username.trim() } }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+    if (!response.ok) return null;
+
+    const json: any = await response.json();
+    const ranking = json?.data?.userContestRanking;
+    if (!ranking || typeof ranking.rating !== "number" || !Number.isFinite(ranking.rating)) {
+      return null;
+    }
+    return {
+      rating: Math.round(ranking.rating),
+      attended: Number(ranking.attendedContestsCount) || 0
+    };
+  } catch (err: any) {
+    console.warn(`[Fetch] Contest rating for ${username} failed: ${err.message}`);
+    return null;
+  }
+}
+
 // Estimates problems solved in the trailing `days` days by diffing the
 // current total against the closest history snapshot at or before that
 // cutoff. Returns null when there isn't enough history yet to say —
@@ -401,7 +460,12 @@ app.post("/api/enroll", enrollLimiter, requirePendingAuth, async (req, res) => {
 
     // Fetch real initial stats — throws if the username doesn't exist or
     // can't currently be verified.
-    const scraped = await scrapeLeetCodeProfile(cleanLeetcodeUsername);
+    // The rating lookup runs in parallel and never throws, so it adds no
+    // latency and can't make enrollment fail.
+    const [scraped, contest] = await Promise.all([
+      scrapeLeetCodeProfile(cleanLeetcodeUsername),
+      fetchContestRating(cleanLeetcodeUsername)
+    ]);
     const todayStr = new Date().toISOString().split("T")[0];
 
     const newUser: User = {
@@ -417,6 +481,8 @@ app.post("/api/enroll", enrollLimiter, requirePendingAuth, async (req, res) => {
       easySolved: scraped.easySolved,
       mediumSolved: scraped.mediumSolved,
       hardSolved: scraped.hardSolved,
+      contestRating: contest?.rating ?? null,
+      contestsAttended: contest?.attended ?? 0,
       // No history yet, so there's no honest way to report a weekly/monthly
       // delta — start at 0 rather than guessing.
       weeklyProgress: 0,
@@ -520,8 +586,12 @@ app.post("/api/users/:id/refresh", refreshLimiter, async (req, res) => {
     }
 
     let scraped;
+    let contest: ContestRating | null = null;
     try {
-      scraped = await scrapeLeetCodeProfile(user.leetcodeUsername);
+      [scraped, contest] = await Promise.all([
+        scrapeLeetCodeProfile(user.leetcodeUsername),
+        fetchContestRating(user.leetcodeUsername)
+      ]);
     } catch (err: any) {
       // Keep the user's existing stats untouched — don't fabricate anything.
       if (err instanceof LeetCodeUserNotFoundError) {
@@ -534,6 +604,10 @@ app.post("/api/users/:id/refresh", refreshLimiter, async (req, res) => {
     user.easySolved = scraped.easySolved;
     user.mediumSolved = scraped.mediumSolved;
     user.hardSolved = scraped.hardSolved;
+    if (contest) {
+      user.contestRating = contest.rating;
+      user.contestsAttended = contest.attended;
+    }
     if (scraped.avatarUrl) {
       user.avatarUrl = scraped.avatarUrl;
     }
@@ -593,12 +667,19 @@ async function syncAllUsers(): Promise<{ users: User[]; lastSyncAll: string }> {
 
   for (const user of users) {
     try {
-      const scraped = await scrapeLeetCodeProfile(user.leetcodeUsername);
+      const [scraped, contest] = await Promise.all([
+        scrapeLeetCodeProfile(user.leetcodeUsername),
+        fetchContestRating(user.leetcodeUsername)
+      ]);
 
       user.allTimeSolved = scraped.allTimeSolved;
       user.easySolved = scraped.easySolved;
       user.mediumSolved = scraped.mediumSolved;
       user.hardSolved = scraped.hardSolved;
+      if (contest) {
+        user.contestRating = contest.rating;
+        user.contestsAttended = contest.attended;
+      }
       if (scraped.avatarUrl) {
         user.avatarUrl = scraped.avatarUrl;
       }
