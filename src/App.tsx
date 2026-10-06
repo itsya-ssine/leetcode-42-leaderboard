@@ -24,6 +24,7 @@ import { useAuth } from "./AuthContext.js";
 import LoginModal from "./LoginModal.js";
 import Modal from "./Modal.js";
 import { computeBadges } from "./achievements.js";
+import ActivityHeatmap from "./ActivityHeatmap.js";
 
 /* ---------- Shared style tokens ---------- */
 
@@ -934,6 +935,9 @@ export default function App() {
 
         {/* ---------- Group growth ---------- */}
         {!loading && <GroupGrowthChart trend={trendData} />}
+
+        {/* ---------- Group activity heatmap ---------- */}
+        {!loading && <ActivityHeatmap users={users} />}
 
           </>
         )}
