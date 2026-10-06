@@ -464,12 +464,15 @@ async function fetchCalendarYear(
 
 // Best-effort current + longest streak for a LeetCode username.
 //
-// LeetCode exposes the current streak directly but has no "longest streak"
-// field, so the longest is computed from the submission calendar. Each sync
-// reads the default window plus the previous calendar year (so a streak that
-// crosses New Year is whole); the first time for a cadet (knownLongest ===
-// null) every active year is read to backfill their full history, and after
-// that the stored longest is only ever raised, never recomputed from less data.
+// Both numbers are computed from the submission calendar (UTC days) so they
+// always agree with each other. LeetCode's own `streak` field is not used:
+// it disagreed with the calendar (the old code logged those mismatches) and
+// it fed straight into "longest", inflating it permanently.
+//
+// Every active year is read each sync (in parallel), so "longest" is rebuilt
+// from the full history and self-corrects. Only when some year failed to
+// load do we fall back to never lowering the stored value, so a flaky
+// response can't shrink a real record.
 //
 // Returns null when LeetCode gave no usable answer. Callers treat null as
 // "leave whatever we have stored alone", so a flaky response can never reset a
@@ -481,53 +484,78 @@ async function fetchStreaks(username: string, knownLongest: number | null): Prom
   const thisYear = new Date().getUTCFullYear();
   const days = new Set<number>(first.days);
 
-  const extraYears =
-    knownLongest === null
-      ? first.activeYears
-      : first.activeYears.filter((y) => y === thisYear - 1);
-  for (const y of extraYears) {
-    const more = await fetchCalendarYear(username, y);
+  // The default window already covers the current year and the last 12 months.
+  const otherYears = first.activeYears.filter((y) => y !== thisYear);
+  const results = await Promise.all(otherYears.map((y) => fetchCalendarYear(username, y)));
+  let complete = true;
+  for (const more of results) {
     if (more) more.days.forEach((d) => days.add(d));
+    else complete = false;
   }
 
   const computed = streaksFromDays(days, Math.floor(Date.now() / 1000 / DAY_SECONDS));
-  // Prefer LeetCode's own current-streak number when it provides one.
-  const current = first.streak ?? computed.current;
   if (first.streak !== null && first.streak !== computed.current) {
-    console.warn(`[Streak] ${username}: LeetCode says ${first.streak}, calendar says ${computed.current}`);
+    console.warn(`[Streak] ${username}: LeetCode says ${first.streak}, calendar says ${computed.current} (using calendar)`);
   }
-  const longest = Math.max(knownLongest ?? 0, computed.longest, current);
-  return { current, longest };
+  const longest = complete ? computed.longest : Math.max(knownLongest ?? 0, computed.longest);
+  return { current: computed.current, longest };
 }
 
-// Estimates problems solved in the trailing `days` days by diffing the
-// current total against the closest history snapshot at or before that
-// cutoff. Returns null when there isn't enough history yet to say —
-// callers should treat null as "not enough data" rather than 0.
+// Problems solved in the trailing `days` calendar days (UTC, today included).
+//
+// History holds one snapshot per UTC day (the last sync of that day), and
+// syncs can be sparse. The old version diffed against the newest snapshot at
+// or before "now - days", which on a sparse history could be weeks old — so
+// "this week" counted more than a week. Now the baseline is the total as of
+// the END of the UTC day `days` days ago, linearly interpolated between the
+// two snapshots that bracket it (the current total counts as a snapshot taken
+// now). A gap in history is therefore spread over the days it covers instead
+// of being dumped into the window. If tracking began inside the window, the
+// result is "solved since we started tracking" (never more than the window).
+// Returns null only when there is no history at all.
 function computeProgressFromHistory(
   history: HistoryRecord[],
   currentTotal: number,
-  days: number
+  days: number,
+  now: number = Date.now()
 ): number | null {
   if (!history || history.length === 0) return null;
 
-  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-  const sorted = [...history].sort((a, b) => a.date.localeCompare(b.date));
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const endOfToday = Math.floor(now / DAY_MS) * DAY_MS + DAY_MS - 1;
+  const target = endOfToday - days * DAY_MS;
 
-  let baseline: HistoryRecord | null = null;
-  for (const record of sorted) {
-    if (new Date(record.date).getTime() <= cutoff) {
-      baseline = record;
-    } else {
-      break;
-    }
+  // One point per date; a snapshot represents the total at the end of its
+  // UTC day (it is overwritten by later syncs that day), capped at `now`.
+  const byDate = new Map<string, { t: number; count: number }>();
+  for (const r of history) {
+    const t = Date.parse(`${r.date}T23:59:59.999Z`);
+    if (!Number.isFinite(t) || t > now) continue;
+    byDate.set(r.date, { t, count: r.solvedCount });
+  }
+  const points = [...byDate.values()].sort((a, b) => a.t - b.t);
+  // The live total is the newest point. Keep it monotonic: a lower live total
+  // (LeetCode revoking solves) must not produce negative progress.
+  points.push({ t: now, count: currentTotal });
+
+  let before: { t: number; count: number } | null = null;
+  let after: { t: number; count: number } | null = null;
+  for (const p of points) {
+    if (p.t <= target) before = p;
+    else { after = p; break; }
   }
 
-  // No snapshot old enough yet — we haven't been tracking this user for
-  // `days` days, so we can't honestly report a number for this window.
-  if (!baseline) return null;
+  let baseline: number;
+  if (!before) {
+    baseline = points[0].count; // tracking started inside the window
+  } else if (!after || after.t === before.t) {
+    baseline = before.count;
+  } else {
+    const ratio = (target - before.t) / (after.t - before.t);
+    baseline = before.count + (after.count - before.count) * ratio;
+  }
 
-  return Math.max(0, currentTotal - baseline.solvedCount);
+  return Math.max(0, Math.round(currentTotal - baseline));
 }
 
 // REST API Endpoints
