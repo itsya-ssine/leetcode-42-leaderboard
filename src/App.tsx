@@ -13,7 +13,9 @@ import {
   LogIn,
   LogOut,
   Trophy,
-  Clock
+  Clock,
+  Activity,
+  ListOrdered
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -57,6 +59,42 @@ const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 const PINNED_STORAGE_KEY = "leader1337:pinned";
 
 type SortKey = "weekly" | "allTime" | "rating";
+
+/* ---------- Pages + navbar ---------- */
+
+// Two pages share one app shell. They are switched with the URL hash
+// (#/ = leaderboard, #/stats = stats) so no server rewrite is needed: a plain
+// static host or Vercel serves "/" for both.
+type Page = "leaderboard" | "stats";
+
+function readPage(): Page {
+  return window.location.hash.startsWith("#/stats") ? "stats" : "leaderboard";
+}
+
+const NAV_ITEMS = [
+  { page: "leaderboard", href: "#/", label: "Leaderboard", Icon: ListOrdered },
+  { page: "stats", href: "#/stats", label: "Stats", Icon: Activity }
+] as const;
+
+function NavLinks({ page, className = "" }: { page: Page; className?: string }) {
+  return (
+    <nav aria-label="Main" className={`items-center gap-1 ${className}`}>
+      {NAV_ITEMS.map(({ page: p, href, label, Icon }) => (
+        <a
+          key={p}
+          href={href}
+          aria-current={page === p ? "page" : undefined}
+          className={`inline-flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-medium transition-colors ${focusRing} ${
+            page === p ? "bg-ink-800 text-white ring-1 ring-line" : "text-mist-400 hover:text-white"
+          }`}
+        >
+          <Icon className="size-4" />
+          {label}
+        </a>
+      ))}
+    </nav>
+  );
+}
 
 // Single source of truth for ordering, used for both the absolute ranks and
 // the displayed list. Contest mode puts rated cadets first (highest rating
@@ -416,6 +454,17 @@ export default function App() {
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [pinnedUsers, setPinnedUsers] = useState<string[]>(readPinned);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [page, setPage] = useState<Page>(readPage);
+
+  // Follow the hash (nav clicks, back/forward) and start each page at the top.
+  useEffect(() => {
+    const onHashChange = () => {
+      setPage(readPage());
+      window.scrollTo(0, 0);
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   // Enroll (finish-signup) form state — the 42 identity itself comes from
   // pendingIntra above, verified server-side; the cadet only ever types
@@ -651,11 +700,9 @@ export default function App() {
   const topSolverWeeklyCount = trendData?.topSolverThisWeekCount || 0;
   const groupWeeklyVelocity = users.reduce((acc, u) => acc + u.weeklyProgress, 0);
 
-  // The podium only shows on the unfiltered board
-  // In contest mode the podium only features rated cadets.
-  const podiumUsers =
-    sortBy === "rating" ? rankedUsers.filter((u) => u.contestRating != null).slice(0, 3) : rankedUsers.slice(0, 3);
-  const showPodium = !loading && !searchQuery && podiumUsers.length >= 3;
+  // Stats page: the three cadets who solved the most this week (ties broken
+  // by total solved), independent of the leaderboard's sort or search.
+  const topWeekly = [...users].sort(compareUsers("weekly")).slice(0, 3);
 
   // Formatting Last Sync time
   const formatSyncTime = (isoString: string) => {
@@ -706,11 +753,14 @@ export default function App() {
       {/* ---------- Top bar ---------- */}
       <header className="border-b border-line">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 md:px-8">
-          <div className="flex items-center gap-2.5">
-            <span className="grid size-8 place-items-center rounded-lg bg-teal-400 text-ink-950">
-              <Trophy className="size-4" strokeWidth={2.25} />
-            </span>
-            <span className="text-base font-semibold tracking-tight text-white">Leader1337</span>
+          <div className="flex items-center gap-6">
+            <a href="#/" className={`flex items-center gap-2.5 rounded-lg ${focusRing}`} aria-label="Leader1337 home">
+              <span className="grid size-8 place-items-center rounded-lg bg-teal-400 text-ink-950">
+                <Trophy className="size-4" strokeWidth={2.25} />
+              </span>
+              <span className="text-base font-semibold tracking-tight text-white">Leader1337</span>
+            </a>
+            <NavLinks page={page} className="hidden md:flex" />
           </div>
 
           <div className="flex items-center gap-2">
@@ -761,16 +811,21 @@ export default function App() {
           </div>
         </div>
       </header>
+      <div className="border-b border-line md:hidden">
+        <NavLinks page={page} className="mx-auto flex max-w-6xl px-4 py-2" />
+      </div>
 
       <main className="mx-auto max-w-6xl px-4 pb-16 pt-10 md:px-8 md:pt-14">
         {/* ---------- Intro ---------- */}
         <div className="mb-8 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
             <h1 className="text-3xl font-semibold tracking-tight text-white md:text-4xl">
-              Weekly LeetCode sprint
+              {page === "stats" ? "Roster stats" : "Weekly LeetCode sprint"}
             </h1>
             <p className="mt-2 max-w-xl text-base text-mist-400">
-              See who is solving the most across the cadet roster. Stats refresh on their own.
+              {page === "stats"
+                ? "tachou makaynch f top 3."
+                : "9raa wziid 9ra."}
             </p>
           </div>
           <div className="flex items-center gap-2 text-sm text-mist-400">
@@ -808,6 +863,9 @@ export default function App() {
           </div>
         )}
 
+        {/* ======== Stats page ======== */}
+        {page === "stats" && (
+          <>
         {/* ---------- Roster stats ---------- */}
         <section
           id="stats-banner"
@@ -829,58 +887,59 @@ export default function App() {
           ))}
         </section>
 
-        {/* ---------- Group growth ---------- */}
-        {!loading && <GroupGrowthChart trend={trendData} />}
-
-        {/* ---------- Podium ---------- */}
-        {showPodium && (
-          <section aria-label="Top three cadets" className="mb-8 grid gap-3 md:grid-cols-3">
-            {podiumUsers.map((user, i) => (
-              <button
-                key={user.id}
-                type="button"
-                onClick={() => setSelectedUser(user)}
-                className={`flex cursor-pointer flex-col gap-4 rounded-xl bg-ink-900 p-4 text-left ring-1 ring-line transition-colors hover:ring-line-strong ${focusRing}`}
-              >
-                <div className="flex items-center gap-3">
-                  <span className={`w-5 text-2xl font-semibold tabular-nums ${rankColor(i + 1)}`}>{i + 1}</span>
-                  <img
-                    src={user.avatarUrl}
-                    alt=""
-                    className="size-11 shrink-0 rounded-full object-cover ring-1 ring-line-strong"
-                    referrerPolicy="no-referrer"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="truncate font-semibold text-white">{user.displayName}</span>
-                      {user.weeklyProgress >= HOT_STREAK_THRESHOLD && <HotStreak />}
+        {/* ---------- Top solvers this week (weekly progress only) ---------- */}
+        {!loading && topWeekly.length > 0 && (
+          <section aria-label="Top solvers this week" className="mb-8">
+            <h2 className="mb-3 text-base font-semibold tracking-tight text-white">Top solvers this week</h2>
+            <div className="grid gap-3 md:grid-cols-3">
+              {topWeekly.map((user, i) => (
+                <button
+                  key={user.id}
+                  type="button"
+                  onClick={() => setSelectedUser(user)}
+                  className={`flex cursor-pointer flex-col gap-4 rounded-xl bg-ink-900 p-4 text-left ring-1 ring-line transition-colors hover:ring-line-strong ${focusRing}`}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className={`w-5 text-2xl font-semibold tabular-nums ${rankColor(i + 1)}`}>{i + 1}</span>
+                    <img
+                      src={user.avatarUrl}
+                      alt=""
+                      className="size-11 shrink-0 rounded-full object-cover ring-1 ring-line-strong"
+                      referrerPolicy="no-referrer"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate font-semibold text-white">{user.displayName}</span>
+                        {user.weeklyProgress >= HOT_STREAK_THRESHOLD && <HotStreak />}
+                      </div>
+                      <div className="truncate text-sm text-mist-500">@{user.leetcodeUsername}</div>
                     </div>
-                    <div className="truncate text-sm text-mist-500">@{user.leetcodeUsername}</div>
                   </div>
-                </div>
 
-                <DifficultyBar easy={user.easySolved} medium={user.mediumSolved} hard={user.hardSolved} />
+                  <DifficultyBar easy={user.easySolved} medium={user.mediumSolved} hard={user.hardSolved} />
 
-                <div className="flex items-baseline justify-between border-t border-line pt-3 text-sm">
-                  <span className={sortBy === "allTime" ? "text-white" : "text-mist-400"}>
-                    <span className="font-semibold tabular-nums">{user.allTimeSolved}</span> solved
-                  </span>
-                  {sortBy === "rating" ? (
-                    <span className="text-teal-300">
-                      <span className="font-semibold tabular-nums">{user.contestRating?.toLocaleString()}</span> rating
+                  <div className="flex items-baseline justify-between border-t border-line pt-3 text-sm">
+                    <span className="text-mist-400">
+                      <span className="font-semibold tabular-nums">{user.allTimeSolved}</span> solved
                     </span>
-                  ) : (
-                    <span className={sortBy === "weekly" ? "text-teal-300" : "text-mist-400"}>
+                    <span className="text-teal-300">
                       <span className="font-semibold tabular-nums">+{user.weeklyProgress}</span> this week
                     </span>
-                  )}
-                </div>
-              </button>
-            ))}
+                  </div>
+                </button>
+              ))}
+            </div>
           </section>
         )}
 
-        {/* ---------- Leaderboard ---------- */}
+        {/* ---------- Group growth ---------- */}
+        {!loading && <GroupGrowthChart trend={trendData} />}
+
+          </>
+        )}
+
+        {/* ======== Leaderboard page ======== */}
+        {page === "leaderboard" && (
         <section
           id="leaderboard-panel"
           aria-label="Leaderboard"
@@ -1131,6 +1190,8 @@ export default function App() {
             </div>
           )}
         </section>
+
+        )}
 
         <LoginModal open={isLoginOpen} onClose={() => setIsLoginOpen(false)} />
 
